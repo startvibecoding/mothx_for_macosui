@@ -234,6 +234,12 @@ struct WorkspaceView: View {
                             .frame(maxWidth: 760, alignment: .leading)
                             .padding(28)
                             .frame(maxWidth: .infinity)
+                            // The content's real laid-out height decides the
+                            // scroll position: text reflow, the turn body, file
+                            // preview strips, change cards and artifact cards all
+                            // change it, and the model re-anchors the bottom on
+                            // every change until the height is stable.
+                            .conversationContentHeight(scrollModel)
                         }
                         // A new conversation gets a brand-new scroll view, so
                         // the previous one's scroll offset cannot survive into
@@ -563,19 +569,13 @@ struct WorkspaceView: View {
                 isRestoringConversation = false
                 logScroll("restoreEnd", "turns=\(currentTurns.count)")
                 scrollModel.endConversationReset()
-                // The previous conversation could have been scrolled to any
-                // depth. Re-assert the bottom across a few frames (each pass
-                // runs after the update commits) so the turn body, its Markdown
-                // and its images are all laid out before the final position is
-                // decided — a single jump can land against a document that is
-                // still growing and leave the restored conversation blank.
-                for attempt in 0..<4 {
-                    scrollModel.requireJump(.restored, force: true)
-                    guard attempt < 3 else { break }
-                    await awaitMainRunLoopTurn()
-                    guard !Task.isCancelled,
-                          sessionRestoreGeneration == restoreGeneration else { return }
-                }
+                // The restored conversation is scrolled to its bottom once the
+                // content is committed; from there the model keeps re-anchoring
+                // on every content-height change (turn body → Markdown → preview
+                // strips → change cards → artifact images) and stops only when
+                // the height is stable. The final position therefore comes from
+                // the real laid-out height, not from a frame count.
+                scrollModel.requireJump(.restored, force: true)
                 prefetchPreviewCache()
             }
         }

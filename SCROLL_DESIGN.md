@@ -47,7 +47,8 @@ ScrollView {
 - **首帧**：`.defaultScrollAnchor(.bottom, for: .initialOffset)`（15+）/ `.defaultScrollAnchor(.bottom)`（14）——恢复/切会话天然落在底部。
 - **增长跟随**：`.defaultScrollAnchor(.bottom, for: .sizeChanges)`（15+）。
 - **探测**：`onScrollGeometryChange`（15+，变换成 `Bool` 减少刷新）+ `onScrollPhaseChange`（15+，判定用户滚动）；macOS 14 用只读 `ConversationVisibilityObserver` 上报 `(contentHeight, offsetY, viewportHeight)`，并按“内容高度未变却偏离底部 = 用户滚动”的启发式判定。
-- **定位**：只保留一条 `ScrollViewReader.scrollTo(锚点, anchor:)`（锚点 = `conversationTopID` / `conversationBottomID`），由 `.task(id:)` 驱动（同帧多次请求自动合并）；`.task` 在 `isSuppressed`（恢复中）直接返回，避免早于本次恢复的旧请求给新会话定位；恢复结束由 WorkspaceView **按帧重复发 4 次**定位请求（每次都在更新提交之后执行），保证正文/Markdown/图片都排版完毕后再决定最终位置。
+- **定位**：只保留一条 `ScrollViewReader.scrollTo(锚点, anchor:)`（锚点 = `conversationTopID` / `conversationBottomID`），由 `.task(id:)` 驱动（同帧多次请求自动合并）；`.task` 在 `isSuppressed`（恢复中）直接返回，避免早于本次恢复的旧请求给新会话定位。
+- **按实际高度定稿（不是按帧数/定时器）**：`conversationContentHeight(scrollModel)` 挂在滚动内容（`LazyVStack`）上，把它每次布局后的**真实高度**报给模型。正文排版、文件预览条、修改点卡片、产物卡片、图片解码完成——只要改变了文档高度就会上报一次；模型在 `followBottom` 期间对每次高度变化重新钉底部（`.task(id:)` 合并成每次更新一次 `scrollTo`），直到某次布局高度不再变化（视为排版完成），此时的位置即为最终位置。连续变化的次数有上限（40），但一旦出现一次“高度稳定”就重新充满，因此迟到的方块仍会被跟随，而“滚动 ↔ 布局”互相触发的死循环不会无限跑。
 
 ### 3.3 删除清单
 
@@ -95,7 +96,8 @@ ScrollView {
 | P3 | `533b39e` | 定位收敛为单条 `ScrollViewReader.scrollTo`，删除 `ConversationScrollObserver`（470 行）与三个 token |
 | P4 | `5f65a81` | `defaultScrollAnchor` 锚定首帧/变长，删除提交 250ms 补滚 |
 | P4.1 | `7bd565a` | 首个 `scrollTo` 放到无挂起点的同步前缀，避免流式突发把跟随滚动饿死 |
-| 复发修复 | 见提交 | 切会话空白复发：`conversationIdentity` 给每个会话全新 ScrollView + 恢复结束按帧重复定位（BUGFIXES 第 2 节） |
+| 复发修复 | 见提交 | 切会话空白复发：`conversationIdentity` 给每个会话全新 ScrollView + 恢复结束定位（BUGFIXES 第 2 节） |
+| 定稿方式 | 见提交 | 最终滚动位置改由**内容实际布局高度**驱动：`conversationContentHeight` 上报 `LazyVStack` 布局高度，高度稳定即完成；删除按帧数重复定位 |
 
 最终形态：`WorkspaceView` 净减 ~540 行；`ConversationScrollObserver`、`settleAfterScroll`、`retryScrollToBottomIfNeeded`、`clampScrollOffsetIfNeeded`、`scrollToBottomNow`、`applySessionResetIfNeeded`、`conversationLayoutID`、`scrollToBottomRequest`、`conversationSessionToken`、`isConversationAtBottom` 全部不存在。
 

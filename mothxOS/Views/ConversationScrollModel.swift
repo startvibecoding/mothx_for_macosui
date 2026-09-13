@@ -60,9 +60,17 @@ final class ConversationScrollModel: ObservableObject {
     /// growth must neither flip `followBottom` nor issue a request.
     private(set) var isSuppressed = false
 
-    /// macOS 14 fallback: last reported content height, used to tell a
-    /// content-size change apart from a pure offset move.
-    private var reportedContentHeight: CGFloat = 0
+    /// The laid-out height of the conversation content, reported by the view
+    /// after every layout pass.
+    private var contentHeight: CGFloat = 0
+    /// Consecutive height-driven bottom re-anchors still allowed. A layout that
+    /// keeps changing is chased while the allowance lasts; the moment a layout
+    /// pass reports an unchanged height the allowance is refilled, so a block
+    /// that arrives later (a change card fetched over the network, an image that
+    /// finished decoding) is still followed while a runaway scroll ↔ layout
+    /// feedback loop cannot spin forever.
+    private var settleBudget = ConversationScrollModel.settleReanchorLimit
+    private static let settleReanchorLimit = 40
     /// macOS 15+ (`onScrollPhaseChange`): true while the user drives the scroll.
     private var isUserScrolling = false
 
@@ -74,7 +82,8 @@ final class ConversationScrollModel: ObservableObject {
         isSuppressed = true
         followBottom = true
         atBottom = true
-        reportedContentHeight = 0
+        contentHeight = 0
+        settleBudget = Self.settleReanchorLimit
     }
 
     /// The restore committed its content; positioning may resume. The caller
@@ -82,7 +91,7 @@ final class ConversationScrollModel: ObservableObject {
     func endConversationReset() {
         isSuppressed = false
         followBottom = true
-        reportedContentHeight = 0
+        contentHeight = 0
     }
 
     // MARK: - Geometry inputs
@@ -104,21 +113,46 @@ final class ConversationScrollModel: ObservableObject {
         // must not stop the follow (the next content change re-pins instead).
     }
 
-    /// macOS 14 fallback: raw geometry from the read-only probe. An offset move
-    /// with a *stable* content height is a user scroll; a move that came with a
-    /// height change is ours.
+    /// macOS 14 fallback: raw geometry from the read-only probe, which is also
+    /// the only source of the content height on that OS. An offset move with a
+    /// *stable* content height is a user scroll; a move that came with a height
+    /// change is ours.
     func reportGeometry(contentHeight: CGFloat, offsetY: CGFloat, viewportHeight: CGFloat) {
-        let contentChanged = abs(contentHeight - reportedContentHeight) > 0.5
-        reportedContentHeight = contentHeight
+        let previousHeight = self.contentHeight
         let value = contentHeight - offsetY - viewportHeight <= Self.bottomThreshold
-        guard value != atBottom else { return }
-        atBottom = value
-        guard !isSuppressed else { return }
-        if isUserScrolling || !contentChanged {
-            followBottom = value
-        } else if value {
-            followBottom = true
+        if value != atBottom {
+            atBottom = value
+            if !isSuppressed {
+                if isUserScrolling || abs(contentHeight - previousHeight) <= 0.5 {
+                    followBottom = value
+                } else if value {
+                    followBottom = true
+                }
+            }
         }
+        reportContentHeight(contentHeight)
+    }
+
+    /// The conversation content was laid out at `height`.
+    ///
+    /// Every block that changes the document height reports through here — text
+    /// reflow, Markdown, file preview strips, change cards, artifact cards,
+    /// images — so the final scroll position is decided from the **real laid-out
+    /// height** instead of from a frame count or a timer. While following, each
+    /// height change re-anchors the bottom (coalesced to one `scrollTo` per
+    /// update by the view's `.task(id:)`) until the height stops changing, which
+    /// is when the layout is complete and the position is final.
+    func reportContentHeight(_ height: CGFloat) {
+        guard abs(height - contentHeight) > 0.5 else {
+            // Stable across a layout pass: the layout is complete, so refill the
+            // allowance for any block that is still on its way.
+            settleBudget = Self.settleReanchorLimit
+            return
+        }
+        contentHeight = height
+        guard followBottom, !isSuppressed, settleBudget > 0 else { return }
+        settleBudget -= 1
+        enqueue(.contentGrew, anchor: .bottom, animated: false)
     }
 
     /// macOS 15+ (`onScrollPhaseChange`): whether the user is driving the scroll.
@@ -344,6 +378,26 @@ extension View {
                     )
                 }
             )
+        }
+    }
+
+    /// Reports the conversation content's laid-out height.
+    ///
+    /// Attach to the scroll view's **content** (the `LazyVStack`), so every block
+    /// whose size the layout decides — the turn body, Markdown, file preview
+    /// strips, change cards, artifact cards, images — is included in the
+    /// measurement the final scroll position is derived from. macOS 14 relies on
+    /// the read-only scroll probe's document height instead.
+    @ViewBuilder
+    func conversationContentHeight(_ model: ConversationScrollModel) -> some View {
+        if #available(macOS 15.0, *) {
+            onGeometryChange(for: CGFloat.self) { proxy in
+                proxy.size.height
+            } action: { _, height in
+                model.reportContentHeight(height)
+            }
+        } else {
+            self
         }
     }
 }
