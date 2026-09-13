@@ -652,7 +652,7 @@ struct TurnBlock: View {
                             }
                             .buttonStyle(.plain)
                             .foregroundStyle(.secondary)
-                            .help("在右侧栏中查看技能")
+                            .help(languageStore.copy.helpViewSkill)
                         } else if item.hasDetail || !item.resultSummary.isEmpty {
                             Button {
                                 onPreviewTool?(item)
@@ -662,7 +662,7 @@ struct TurnBlock: View {
                             }
                             .buttonStyle(.plain)
                             .foregroundStyle(.secondary)
-                            .help("在右侧栏中查看")
+                            .help(languageStore.copy.helpViewDetail)
                         }
                     }
                 }

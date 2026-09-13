@@ -326,6 +326,9 @@ struct WorkspaceView: View {
                                     .font(.system(size: 15, weight: .semibold))
                                     .frame(width: 34, height: 30)
                                     .contentShape(RoundedRectangle(cornerRadius: 8))
+                                    // On the label: a borderless Menu does not
+                                    // reliably surface a tooltip on its wrapper.
+                                    .help(c.turnHistoryHelp)
                             }
                             .menuStyle(.borderlessButton)
                             .menuIndicator(.hidden)
@@ -336,7 +339,6 @@ struct WorkspaceView: View {
                             .shadow(color: .black.opacity(0.12), radius: 5, y: 2)
                             .padding(.top, 10)
                             .padding(.trailing, 18)
-                            .help(c.turnHistoryHelp)
                         }
                     }
                     .overlay(alignment: .bottom) {
@@ -876,7 +878,7 @@ struct WorkspaceView: View {
         .buttonStyle(.plain)
         .hoverHighlight()
         .foregroundStyle(.secondary)
-        .help("显示右侧栏")
+        .help(languageStore.copy.helpSidebarToggle(isRightSidebarOpen))
         .padding(.trailing, 16)
         .padding(.top, 12)
         .transition(.opacity)
@@ -1439,6 +1441,7 @@ private struct ImageRecognitionProgressCard: View {
 }
 
 private struct ImageGenerationChoiceCard: View {
+    @EnvironmentObject private var languageStore: LanguageStore
     let selection: ImageGenerationSelection?
     let configuredProvider: String
     let configuredModel: String
@@ -1464,6 +1467,7 @@ private struct ImageGenerationChoiceCard: View {
                 }
                 .buttonStyle(.plain)
                 .foregroundStyle(.secondary)
+                .help(languageStore.copy.close)
             }
 
             if let selection {
@@ -1551,7 +1555,7 @@ struct CurrentDirectoryMenu: View {
                 }
                 .buttonStyle(.plain)
                 .hoverHighlight()
-                .help("在 \(defaultApplication.name) 中打开 \(directoryName)")
+                .help(languageStore.copy.helpOpenInApp(defaultApplication.name, directoryName))
 
                 Divider()
                     .frame(height: 16)
@@ -1567,7 +1571,7 @@ struct CurrentDirectoryMenu: View {
                 }
                 .buttonStyle(.plain)
                 .hoverHighlight()
-                .help("选择打开 \(directoryName) 的应用")
+                .help(languageStore.copy.helpChooseOpenApp(directoryName))
             } else {
                 ProgressView()
                     .controlSize(.small)
@@ -1753,7 +1757,8 @@ struct PromptComposer: View {
                     Text(c.attachmentsCountLabel(attachments.count)).font(.caption).foregroundStyle(.secondary)
                     Text(attachments.map(\.name).joined(separator: "、")).font(.caption).foregroundStyle(.tertiary).lineLimit(1)
                     Spacer()
-                    Button { attachments.removeAll() } label: { Image(systemName: "xmark") }.buttonStyle(.plain).hoverHighlight()
+                    Button { attachments.removeAll() } label: { Image(systemName: "xmark") }
+                        .buttonStyle(.plain).hoverHighlight().help(c.helpClearAttachments)
                 }.padding(.horizontal, 12).padding(.top, 10)
             }
             RetSubmitTextEditor(text: $prompt, placeholder: promptPlaceholder, isRunning: isRunning, onPasteImage: onPasteImage, onSubmit: submit)
@@ -1783,7 +1788,7 @@ struct PromptComposer: View {
                 Button { showModeMenu.toggle() } label: {
                     Text(mode.capitalized).font(.callout).foregroundStyle(mode.lowercased() == "yolo" ? .red : .secondary)
                         .padding(.horizontal, 8).frame(minHeight: 42).contentShape(Rectangle())
-                }.buttonStyle(.plain).hoverHighlight()
+                }.buttonStyle(.plain).hoverHighlight().help(c.helpSelectMode)
                     .popover(isPresented: $showModeMenu, arrowEdge: .bottom) {
                         VStack(alignment: .leading, spacing: 3) {
                             ForEach(["plan", "agent", "yolo"], id: \.self) { option in
@@ -1806,7 +1811,7 @@ struct PromptComposer: View {
                 } label: {
                     Text(selectedProviderLabel).font(.callout).lineLimit(1).foregroundStyle(.secondary)
                         .padding(.horizontal, 8).frame(minHeight: 42).contentShape(Rectangle())
-                }.buttonStyle(.plain).hoverHighlight()
+                }.buttonStyle(.plain).hoverHighlight().help(c.helpSelectProvider)
                     .popover(isPresented: $showProviderMenu, arrowEdge: .bottom) {
                         VStack(alignment: .leading, spacing: 3) {
                             if providers.isEmpty {
@@ -1852,7 +1857,7 @@ struct PromptComposer: View {
                 } label: {
                     Text(selectedModelLabel).font(.callout).lineLimit(1).foregroundStyle(.secondary)
                         .padding(.horizontal, 8).frame(minHeight: 42).contentShape(Rectangle())
-                }.buttonStyle(.plain).hoverHighlight()
+                }.buttonStyle(.plain).hoverHighlight().help(c.helpSelectModel)
                     .popover(isPresented: $showModelMenu, arrowEdge: .bottom) {
                         VStack(alignment: .leading, spacing: 3) {
                             if models.isEmpty {
@@ -2012,7 +2017,8 @@ struct PromptComposer: View {
                 HStack(spacing: 8) {
                     Button {
                         if plusSubmenu == .addSkills { self.plusSubmenu = .skills } else { self.plusSubmenu = nil }
-                    } label: { Image(systemName: "chevron.left") }.buttonStyle(.plain).hoverHighlight()
+                    } label: { Image(systemName: "chevron.left") }
+                        .buttonStyle(.plain).hoverHighlight().help(copy.helpBack)
                     switch plusSubmenu {
                     case .skills: Text(copy.skillsActivatedLabel(selectedSkills.count)).font(.headline)
                     case .addSkills: Text(copy.addSkill).font(.headline)

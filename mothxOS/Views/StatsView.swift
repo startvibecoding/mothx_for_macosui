@@ -233,14 +233,14 @@ struct StatsRecentCard: View {
                 }
                 HStack(spacing: 5) {
                     Spacer()
-                    Button { if page > 1 { loadPage(page - 1) } } label: { Image(systemName: "chevron.left") }.buttonStyle(.borderless).disabled(page <= 1)
+                    Button { if page > 1 { loadPage(page - 1) } } label: { Image(systemName: "chevron.left") }.buttonStyle(.borderless).disabled(page <= 1).help(copy.helpPreviousPage)
                     ForEach(visiblePages, id: \.self) { pageNumber in
                         Button { if pageNumber != page { loadPage(pageNumber) } } label: {
                             Text("\(pageNumber)").frame(width: 26, height: 24)
                         }.buttonStyle(.plain).background(pageNumber == page ? Color.accentColor.opacity(0.16) : .clear).clipShape(RoundedRectangle(cornerRadius: 5)).foregroundStyle(pageNumber == page ? Color.accentColor : .primary)
                     }
                     Text(copy.statsPageLabel(page, totalPages)).font(.caption).foregroundStyle(.secondary).padding(.leading, 5)
-                    Button { if page * data.pageSize < data.total { loadPage(page + 1) } } label: { Image(systemName: "chevron.right") }.buttonStyle(.borderless).disabled(page * data.pageSize >= data.total)
+                    Button { if page * data.pageSize < data.total { loadPage(page + 1) } } label: { Image(systemName: "chevron.right") }.buttonStyle(.borderless).disabled(page * data.pageSize >= data.total).help(copy.helpNextPage)
                 }.padding(.top, 14)
             }
         }

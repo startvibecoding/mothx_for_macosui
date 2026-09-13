@@ -557,6 +557,31 @@ struct Copy {
     var addSkillFailedPrefix: (String) -> String { { detail in self.text("添加技能失败：\(detail)", "Failed to add skill: \(detail)") } }
     var scrollRunningHelp: String { text("正在输出，滚动到底部", "Streaming output, scroll to bottom") }
     var scrollBottomHelp: String { text("滚动到底部", "Scroll to bottom") }
+    /// Hover help (tooltips) for icon-only / ambiguous controls.
+    func helpOpenInApp(_ app: String, _ directory: String) -> String {
+        text("在 \(app) 中打开 \(directory)", "Open \(directory) in \(app)")
+    }
+    func helpChooseOpenApp(_ directory: String) -> String {
+        text("选择打开 \(directory) 的应用", "Choose the app for \(directory)")
+    }
+    var helpSelectMode: String { text("选择运行模式：plan / agent / yolo", "Choose the run mode: plan / agent / yolo") }
+    var helpSelectProvider: String { text("选择运营商", "Choose the provider") }
+    var helpSelectModel: String { text("选择模型", "Choose the model") }
+    var helpClearAttachments: String { text("清空附件", "Clear attachments") }
+    var helpBack: String { text("返回", "Back") }
+    var helpClearSearch: String { text("清除搜索内容", "Clear the search") }
+    var helpPreviousPage: String { text("上一页", "Previous page") }
+    var helpNextPage: String { text("下一页", "Next page") }
+    var helpRestoreSidebar: String { text("收起右侧栏", "Collapse the right sidebar") }
+    var helpCollapseReviewSidebar: String { text("收起审核栏", "Collapse the review sidebar") }
+    var helpPreviewImage: String { text("在右侧栏预览图片", "Preview the image in the right sidebar") }
+    var helpPreviewVideo: String { text("在右侧栏预览视频", "Preview the video in the right sidebar") }
+    var helpPreviewDocument: String { text("在右侧栏预览文件", "Preview the file in the right sidebar") }
+    var helpViewSkill: String { text("在右侧栏中查看技能", "View the skill in the right sidebar") }
+    var helpViewDetail: String { text("在右侧栏中查看", "View in the right sidebar") }
+    func helpSidebarToggle(_ open: Bool) -> String {
+        open ? text("关闭右侧栏", "Hide the right sidebar") : text("显示右侧栏", "Show the right sidebar")
+    }
     var turnHistoryHelp: String { text("历史轮次：选择要查看的一轮", "Past turns: choose one to view") }
     var backToLatestTurn: String { text("回到最新轮次", "Back to latest turn") }
     var latestTurnBadge: String { text("最新", "Latest") }

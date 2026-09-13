@@ -136,6 +136,7 @@ struct ProviderList: View {
 }
 
 private struct ProviderRow: View {
+    @EnvironmentObject private var languageStore: LanguageStore
     let provider: MothxProviderConfig
     let defaultID: String
     let select: () -> Void
@@ -156,7 +157,7 @@ private struct ProviderRow: View {
             if isHovered {
                 Button(action: delete) {
                     Image(systemName: "trash").foregroundStyle(.red.opacity(0.8))
-                }.buttonStyle(.plain).hoverHighlight()
+                }.buttonStyle(.plain).hoverHighlight().help(languageStore.copy.delete)
             }
             Image(systemName: "chevron.right").font(.caption).foregroundStyle(.tertiary)
         }
@@ -932,7 +933,7 @@ private struct MCPServerCard: View {
                         .background(Color.primary.opacity(0.12)).clipShape(RoundedRectangle(cornerRadius: 6))
                     Button { server.args.remove(at: index) } label: {
                         Image(systemName: "trash")
-                    }.buttonStyle(.plain).foregroundStyle(.red.opacity(0.8))
+                    }.buttonStyle(.plain).foregroundStyle(.red.opacity(0.8)).help(c.delete)
                 }
             }
         }
@@ -959,7 +960,7 @@ private struct MCPServerCard: View {
                         .background(Color.primary.opacity(0.12)).clipShape(RoundedRectangle(cornerRadius: 6))
                     Button { field.wrappedValue.removeAll { $0.id == pair.id } } label: {
                         Image(systemName: "trash")
-                    }.buttonStyle(.plain).foregroundStyle(.red.opacity(0.8))
+                    }.buttonStyle(.plain).foregroundStyle(.red.opacity(0.8)).help(c.delete)
                 }
             }
         }
@@ -1045,7 +1046,8 @@ private struct MCPMarketSheet: View {
                     Image(systemName: "exclamationmark.triangle.fill")
                     Text(errorMessage).lineLimit(2)
                     Spacer()
-                    Button { self.errorMessage = nil } label: { Image(systemName: "xmark") }.buttonStyle(.plain)
+                    Button { self.errorMessage = nil } label: { Image(systemName: "xmark") }
+                        .buttonStyle(.plain).help(c.close)
                 }
                 .font(.caption).foregroundStyle(.red)
                 .padding(.horizontal, 16).padding(.vertical, 10)
@@ -1523,6 +1525,7 @@ struct ModelSection: View { @EnvironmentObject private var mothx: MothxServiceMa
 }
 
 private struct SearchField: View {
+    @EnvironmentObject private var languageStore: LanguageStore
     @Binding var text: String
     let placeholder: String
 
@@ -1531,7 +1534,8 @@ private struct SearchField: View {
             Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
             TextField(placeholder, text: $text).textFieldStyle(.plain)
             if !text.isEmpty {
-                Button { text = "" } label: { Image(systemName: "xmark.circle.fill").foregroundStyle(.secondary) }.buttonStyle(.plain)
+                Button { text = "" } label: { Image(systemName: "xmark.circle.fill").foregroundStyle(.secondary) }
+                    .buttonStyle(.plain).help(languageStore.copy.helpClearSearch)
             }
         }
         .padding(9)
@@ -1542,13 +1546,14 @@ private struct SearchField: View {
 
 struct ModelRow: View {
     @Environment(\.colorScheme) private var colorScheme
+    @EnvironmentObject private var languageStore: LanguageStore
     @Binding var model: MothxModelConfig
     let selected: Bool
     let select: () -> Void
     let delete: () -> Void
     @State private var isHovered = false
 
-    var body: some View { VStack(alignment: .leading, spacing: 12) { HStack { Image(systemName: selected ? "chevron.down" : "chevron.right").font(.caption); Text(model.displayName).font(.system(size: 14, weight: .medium)); Text(model.id).font(.caption).foregroundStyle(.secondary); Spacer(); if model.reasoning { Text("Reasoning").font(.caption2).foregroundStyle(.orange) }; Button(action: delete) { Image(systemName: "trash").foregroundStyle(.red.opacity(0.8)) }.buttonStyle(.plain) }.foregroundStyle(.primary); if selected { HStack { SettingsField(title: "Model ID", text: $model.id); SettingsField(title: "Name", text: $model.name) }; HStack { NumberField(title: "Context window", value: $model.contextWindow); NumberField(title: "Max tokens", value: $model.maxTokens) }; if model.contextWindow <= 0 { Text("API 未提供该模型的上下文上限，请根据运营商文档手动填写。\nThe API did not provide this model's context limit; enter it from the provider documentation.").font(.caption).foregroundStyle(.orange) }; Toggle("Reasoning", isOn: $model.reasoning); Text("Input: \(model.input.isEmpty ? "text" : model.input.joined(separator: ", "))").font(.caption).foregroundStyle(.secondary) } }.padding(14).frame(maxWidth: .infinity, alignment: .leading).background(selected ? Color.primary.opacity(0.08) : (isHovered ? Color.primary.opacity(0.08) : (colorScheme == .light ? .white : .codexCard))).clipShape(RoundedRectangle(cornerRadius: 9)).contentShape(Rectangle()).onHover { isHovered = $0 }.onTapGesture(perform: select) }
+    var body: some View { VStack(alignment: .leading, spacing: 12) { HStack { Image(systemName: selected ? "chevron.down" : "chevron.right").font(.caption); Text(model.displayName).font(.system(size: 14, weight: .medium)); Text(model.id).font(.caption).foregroundStyle(.secondary); Spacer(); if model.reasoning { Text("Reasoning").font(.caption2).foregroundStyle(.orange) }; Button(action: delete) { Image(systemName: "trash").foregroundStyle(.red.opacity(0.8)) }.buttonStyle(.plain).help(languageStore.copy.delete) }.foregroundStyle(.primary); if selected { HStack { SettingsField(title: "Model ID", text: $model.id); SettingsField(title: "Name", text: $model.name) }; HStack { NumberField(title: "Context window", value: $model.contextWindow); NumberField(title: "Max tokens", value: $model.maxTokens) }; if model.contextWindow <= 0 { Text("API 未提供该模型的上下文上限，请根据运营商文档手动填写。\nThe API did not provide this model's context limit; enter it from the provider documentation.").font(.caption).foregroundStyle(.orange) }; Toggle("Reasoning", isOn: $model.reasoning); Text("Input: \(model.input.isEmpty ? "text" : model.input.joined(separator: ", "))").font(.caption).foregroundStyle(.secondary) } }.padding(14).frame(maxWidth: .infinity, alignment: .leading).background(selected ? Color.primary.opacity(0.08) : (isHovered ? Color.primary.opacity(0.08) : (colorScheme == .light ? .white : .codexCard))).clipShape(RoundedRectangle(cornerRadius: 9)).contentShape(Rectangle()).onHover { isHovered = $0 }.onTapGesture(perform: select) }
 }
 
 struct NumberField: View { let title: String; @Binding var value: Int
@@ -1709,6 +1714,7 @@ private struct SkillMarketSheet: View {
                             changePage(page - 1)
                         } label: { Image(systemName: "chevron.left") }
                         .buttonStyle(.bordered)
+                        .help(c.helpPreviousPage)
                         .disabled(isLoading || page <= 1)
                         Text(c.text("第 \(page) / \(totalPages) 页", "Page \(page) of \(totalPages)"))
                             .font(.caption)
@@ -1717,6 +1723,7 @@ private struct SkillMarketSheet: View {
                             changePage(page + 1)
                         } label: { Image(systemName: "chevron.right") }
                         .buttonStyle(.bordered)
+                        .help(c.helpNextPage)
                         .disabled(isLoading || page >= totalPages)
                         Spacer()
                         Text(c.text("共 \(total) 个", "\(total) total"))
@@ -1766,7 +1773,7 @@ private struct SkillMarketSheet: View {
                     Text(errorMessage).lineLimit(2)
                     Spacer()
                     Button { self.errorMessage = nil } label: { Image(systemName: "xmark") }
-                        .buttonStyle(.plain)
+                        .buttonStyle(.plain).help(c.close)
                 }
                 .font(.caption)
                 .foregroundStyle(.red)

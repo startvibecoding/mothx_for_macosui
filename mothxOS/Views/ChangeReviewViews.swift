@@ -20,7 +20,7 @@ struct EmptyPreviewSidebar: View {
                 }
                 .buttonStyle(.plain)
                 .foregroundStyle(.secondary)
-                .help("收起右侧栏")
+                .help(languageStore.copy.helpRestoreSidebar)
             }
             .padding(.horizontal, 16)
             .frame(height: 54)
@@ -534,7 +534,7 @@ struct ChangeReviewSidebar: View {
                 }
                 .buttonStyle(.plain)
                 .foregroundStyle(.secondary)
-                .help("收起审核栏")
+                .help(languageStore.copy.helpCollapseReviewSidebar)
             }
             .padding(.horizontal, 16)
             .frame(height: 54)
@@ -659,6 +659,7 @@ private struct PDFPreviewView: NSViewRepresentable {
 }
 
 struct SkillPreviewSidebar: View {
+    @EnvironmentObject private var languageStore: LanguageStore
     let skill: MothxSkill
     let onClose: () -> Void
 
@@ -690,7 +691,7 @@ struct SkillPreviewSidebar: View {
                 }
                 .buttonStyle(.plain)
                 .foregroundStyle(.secondary)
-                .help("收起右侧栏")
+                .help(languageStore.copy.helpRestoreSidebar)
             }
             .padding(.horizontal, 16)
             .frame(height: 54)
@@ -735,6 +736,7 @@ struct ToolDetailSidebar: View {
     let sessionID: String
     let item: ToolInvocationSummary
     let onClose: () -> Void
+    @EnvironmentObject private var languageStore: LanguageStore
     @State private var detail: MothxToolResultDetail?
     @State private var isLoading = true
 
@@ -760,7 +762,7 @@ struct ToolDetailSidebar: View {
                 }
                 .buttonStyle(.plain)
                 .foregroundStyle(.secondary)
-                .help("收起右侧栏")
+                .help(languageStore.copy.helpRestoreSidebar)
             }
             .padding(.horizontal, 16)
             .frame(height: 54)

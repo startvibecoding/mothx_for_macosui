@@ -20,6 +20,7 @@ struct MessageBubble: View {
 }
 
 struct ImagePreviewStrip: View {
+    @EnvironmentObject private var languageStore: LanguageStore
     let images: [MothxImagePreview]
     let onSelect: (MothxImagePreview) -> Void
 
@@ -30,7 +31,7 @@ struct ImagePreviewStrip: View {
                     ImagePreviewThumbnail(image: image)
                 }
                 .buttonStyle(.plain)
-                .help("点击在右侧栏预览图片")
+                .help(languageStore.copy.helpPreviewImage)
             }
         }
         .padding(.top, 8)
@@ -42,6 +43,7 @@ struct ImagePreviewStrip: View {
 /// follows the file-change card; clicking a file row opens the image in the
 /// right sidebar without rendering an inline thumbnail.
 struct PublishArtifactCard: View {
+    @EnvironmentObject private var languageStore: LanguageStore
     let images: [MothxImagePreview]
     /// The durable/current Run that owns these artifacts. Keeping this on the
     /// card makes the turn-to-Run association explicit at the render boundary.
@@ -103,7 +105,7 @@ struct PublishArtifactCard: View {
                     .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
-                .help("点击在右侧栏预览图片")
+                .help(languageStore.copy.helpPreviewImage)
             }
         }
         .background(.background, in: RoundedRectangle(cornerRadius: 10))
@@ -119,6 +121,7 @@ struct PublishArtifactCard: View {
 /// downloaded and published a local video file. The file rows deliberately
 /// stay compact; clicking one opens the playable preview in the right sidebar.
 struct PublishArtifactVideoCard: View {
+    @EnvironmentObject private var languageStore: LanguageStore
     let videos: [MothxVideoPreview]
     let runID: String
     let onPreview: (MothxVideoPreview) -> Void
@@ -176,7 +179,7 @@ struct PublishArtifactVideoCard: View {
                     .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
-                .help("点击在右侧栏预览视频")
+                .help(languageStore.copy.helpPreviewVideo)
             }
         }
         .background(.background, in: RoundedRectangle(cornerRadius: 10))
@@ -191,6 +194,7 @@ struct PublishArtifactVideoCard: View {
 /// more generated Office/PDF files. The actual rendering happens in Quick
 /// Look in the right sidebar so large documents do not inflate the message.
 struct DocumentPreviewStrip: View {
+    @EnvironmentObject private var languageStore: LanguageStore
     let documents: [MothxDocumentPreview]
     let onSelect: (MothxDocumentPreview) -> Void
 
@@ -215,7 +219,7 @@ struct DocumentPreviewStrip: View {
                     .background(Color.primary.opacity(0.025), in: RoundedRectangle(cornerRadius: 10))
                 }
                 .buttonStyle(.plain)
-                .help("点击在右侧栏预览文件")
+                .help(languageStore.copy.helpPreviewDocument)
             }
         }
         .padding(.top, 8)
@@ -226,6 +230,7 @@ struct DocumentPreviewStrip: View {
 /// PowerPoint, Word, or Excel files. Each row opens the source file in the
 /// right sidebar through macOS Quick Look.
 struct PublishArtifactDocumentCard: View {
+    @EnvironmentObject private var languageStore: LanguageStore
     let documents: [MothxDocumentPreview]
     let runID: String
     let onPreview: (MothxDocumentPreview) -> Void
@@ -287,7 +292,7 @@ struct PublishArtifactDocumentCard: View {
                     .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
-                .help("点击在右侧栏预览文件")
+                .help(languageStore.copy.helpPreviewDocument)
             }
         }
         .background(.background, in: RoundedRectangle(cornerRadius: 10))
@@ -388,6 +393,7 @@ private struct LocalImageThumbnail: View {
 }
 
 struct ImagePreviewSidebar: View {
+    @EnvironmentObject private var languageStore: LanguageStore
     let image: MothxImagePreview
     let onClose: () -> Void
 
@@ -413,7 +419,7 @@ struct ImagePreviewSidebar: View {
                 }
                 .buttonStyle(.plain)
                 .foregroundStyle(.secondary)
-                .help("收起右侧栏")
+                .help(languageStore.copy.helpRestoreSidebar)
             }
             .padding(.horizontal, 16)
             .frame(height: 54)
@@ -666,6 +672,7 @@ private final class DocumentPreviewWindowController: NSWindowController, NSWindo
 }
 
 struct DocumentPreviewSidebar: View {
+    @EnvironmentObject private var languageStore: LanguageStore
     let document: MothxDocumentPreview
     let onClose: () -> Void
     @State private var coordinator = QuickLookPreviewCoordinator()
@@ -696,7 +703,7 @@ struct DocumentPreviewSidebar: View {
                 }
                 .buttonStyle(.plain)
                 .foregroundStyle(.secondary)
-                .help("收起右侧栏")
+                .help(languageStore.copy.helpRestoreSidebar)
             }
             .padding(.horizontal, 16)
             .frame(height: 54)
@@ -736,6 +743,7 @@ struct DocumentPreviewSidebar: View {
 }
 
 struct VideoPreviewSidebar: View {
+    @EnvironmentObject private var languageStore: LanguageStore
     let video: MothxVideoPreview
     let onClose: () -> Void
     @State private var player: AVPlayer?
@@ -762,7 +770,7 @@ struct VideoPreviewSidebar: View {
                 }
                 .buttonStyle(.plain)
                 .foregroundStyle(.secondary)
-                .help("收起右侧栏")
+                .help(languageStore.copy.helpRestoreSidebar)
             }
             .padding(.horizontal, 16)
             .frame(height: 54)

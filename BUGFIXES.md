@@ -78,6 +78,7 @@
 
 - 执行边界只属于 mothx，mothxOS 不实现第二套 Agent 执行 / Run 状态机。
 - 团队编排边界只属于 mothxOS。
+- 不提供终端模式：客户端不内嵌 mothx TUI/PTY，不依赖 SwiftTerm；不得重新引入 UI↔TUI 模式切换、终端面板或 `TerminalSessionStore`。
 - 接口以 `MOTHX_API.md` 为契约，schema 变化必须同步文档。
 - 密钥不得进入日志、文档、源码、提交记录或普通 UI 文本。
 
