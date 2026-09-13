@@ -20,6 +20,8 @@ struct ConversationScrollRequest: Equatable {
         case userRequested
         /// A historical turn was picked from the turn menu; position at its top.
         case turnSelected
+        /// A new round started; show it from its beginning (the user's question).
+        case newTurn
     }
 
     /// Which end of the content the viewport should land on.
@@ -103,14 +105,11 @@ final class ConversationScrollModel: ObservableObject {
         guard value != atBottom else { return }
         atBottom = value
         guard !isSuppressed else { return }
-        if isUserScrolling {
-            followBottom = value
-        } else if value {
-            // Reaching the bottom always re-pins.
-            followBottom = true
-        }
-        // A flip caused by document growth while the user is idle is ours: it
-        // must not stop the follow (the next content change re-pins instead).
+        // Only a *user* move changes the follow intent. A reading produced by
+        // the layout — a turn that is shorter than the viewport, or growth that
+        // has not exceeded it yet — must never re-enable following behind the
+        // user's back (a new round is opened at its top and has to stay there).
+        if isUserScrolling { followBottom = value }
     }
 
     /// macOS 14 fallback: raw geometry from the read-only probe, which is also
@@ -122,12 +121,11 @@ final class ConversationScrollModel: ObservableObject {
         let value = contentHeight - offsetY - viewportHeight <= Self.bottomThreshold
         if value != atBottom {
             atBottom = value
-            if !isSuppressed {
-                if isUserScrolling || abs(contentHeight - previousHeight) <= 0.5 {
-                    followBottom = value
-                } else if value {
-                    followBottom = true
-                }
+            // macOS 14 has no scroll-phase signal, so a reading with a *stable*
+            // content height is the only evidence that the user (not the layout)
+            // moved the viewport.
+            if !isSuppressed, isUserScrolling || abs(contentHeight - previousHeight) <= 0.5 {
+                followBottom = value
             }
         }
         reportContentHeight(contentHeight)
@@ -203,6 +201,15 @@ final class ConversationScrollModel: ObservableObject {
         isSuppressed = false
         followBottom = false
         enqueue(.turnSelected, anchor: .top, animated: false)
+    }
+
+    /// A new round started: open it at its top (the user's question) and stop
+    /// following until the user asks for the bottom again (the round button, or
+    /// scrolling to the bottom themselves).
+    func startNewTurnFromTop() {
+        isSuppressed = false
+        followBottom = false
+        enqueue(.newTurn, anchor: .top, animated: false)
     }
 
     // MARK: - Private

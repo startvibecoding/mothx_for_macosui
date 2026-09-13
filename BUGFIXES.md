@@ -63,7 +63,7 @@
 **按模块**
 
 - 会话/流式：运行中不得用服务端快照整体替换本地消息（BUG-0004）；历史轮次保持静态，只有最后一轮更新。
-- 轮次展示：任意时刻只渲染一轮（最新轮次为默认），历史轮次只能通过右上角 `…` 菜单进入；不得恢复逐轮 accordion/`showAllHistory`；显示非最新轮次时必须提供“回到最新轮次”入口，新一轮开始时自动切回最新轮次；非最新轮次的底部定位用 `.top` 锥点且 `followBottom=false`，且不得开启 `defaultScrollAnchor(.sizeChanges)`（否则正文提交会被拽到该轮末尾）。
+- 轮次展示：任意时刻只渲染一轮（最新轮次为默认），历史轮次只能通过右上角 `…` 菜单进入；不得恢复逐轮 accordion/`showAllHistory`；显示非最新轮次时必须提供“回到最新轮次”入口，新一轮开始时自动切回最新轮次并**定位到该轮顶部**（`followBottom=false`，布局读数不得改写跟随意图）；非最新轮次的底部定位用 `.top` 锥点且 `followBottom=false`，且不得开启 `defaultScrollAnchor(.sizeChanges)`（否则正文提交会被拽到该轮末尾）。
 - 会话恢复：切换会话必须先清空 + 加载态，恢复完成后再滚动定位（BUG-0005 / BUG-0014，防护点以 BUG-0017 + 第 2 节复发处理为准）：每个会话必须拿到**全新 ScrollView**（`conversationIdentity`，不得复用上一个会话的滚动视图/偏移）；恢复期间不得发滚动请求（`isSuppressed`），内容加载完毕后再重复定位（按帧重发，不得只发一次）。
 - 滚动定位：滚动所有权只属 SwiftUI。不得出现 `NSClipView.scroll`/直接改 clip origin、settle 循环、`documentView.bounds.height` 重试窗口或提交后 sleep 补滚（BUG-0016/0017）；底部检测用 `onScrollGeometryChange`+`onScrollPhaseChange`（15+）或只读 `ConversationVisibilityObserver`（14）；首帧/变长靠 `defaultScrollAnchor`；`followBottom` 是“是否跟随”的唯一门，用户上滑后不得被拽回。
 - 流式打字机：已显示进度必须来自 `TypewriterProgressStore`（可跨 LazyVStack 回收恢复），不得退回只靠 @State 计数（BUG-0015）；有界窗口只裁头部，不能整段清空重打（BUG-0004）。

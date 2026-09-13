@@ -38,10 +38,13 @@ struct WorkspaceView: View {
     /// value pins the transcript to that historical turn, reachable through the
     /// top-right turn menu. There is no per-turn expand/collapse any more.
     @State private var selectedTurnID: String?
-    /// The newest turn id already shown for the current session, so a newly
-    /// started turn takes over the viewport (requirement: history moves into the
-    /// menu) without re-snapping on every streamed chunk.
+    /// The newest turn id already shown for the current session, together with
+    /// the turn count, so a newly started turn takes over the viewport
+    /// (requirement: history moves into the menu) without re-snapping on every
+    /// streamed chunk — and without mistaking a client-local user message id
+    /// being replaced by the server's id for a new round.
     @State private var lastSeenLatestTurnID: String?
+    @State private var lastSeenTurnCount = 0
     /// Bumped at the start of every conversation restore and used as the scroll
     /// view's identity. A fresh scroll view is the only reliable way to discard
     /// the previous conversation's clip origin: reusing one lets a deeply
@@ -254,7 +257,9 @@ struct WorkspaceView: View {
                         // loop. Reading a historical turn clears the size-change
                         // anchor so its body committing cannot yank the viewport
                         // to that turn's end.
-                        .conversationBottomAnchoring(pinOnSizeChanges: isViewingLatestTurn)
+                        .conversationBottomAnchoring(
+                            pinOnSizeChanges: isViewingLatestTurn && scrollModel.followBottom
+                        )
                         // Bottom detection and positioning both belong to
                         // SwiftUI now: `onScrollGeometryChange` (+ scroll phase)
                         // on macOS 15, a read-only AppKit probe on macOS 14.
@@ -488,6 +493,7 @@ struct WorkspaceView: View {
                 currentTurns = []
                 selectedTurnID = nil
                 lastSeenLatestTurnID = nil
+                lastSeenTurnCount = 0
                 preparedTurnIDs = []
                 preparingTurnID = nil
                 imageGenerationMenuOpen = false
@@ -537,6 +543,7 @@ struct WorkspaceView: View {
                 // turn is reachable through the top-right menu.
                 selectedTurnID = nil
                 lastSeenLatestTurnID = currentTurns.last?.id
+                lastSeenTurnCount = currentTurns.count
                 preparedTurnIDs = []
                 preparingTurnID = nil
                 if let lastID = currentTurns.last?.id {
@@ -596,12 +603,19 @@ struct WorkspaceView: View {
                 guard generation == turnsRecomputeGeneration, !Task.isCancelled else { return }
                 currentTurns = turns
                 mothx.recordRuntimeLog("workspace", "turns recomputed session=\(sessionID) messages=\(messages.count) turns=\(turns.count) elapsedMs=\(Int(Date().timeIntervalSince(started) * 1000))")
-                // A newly started turn takes over the view: every earlier turn
-                // becomes reachable through the top-right menu only.
+                // A newly started round takes over the view — every earlier turn
+                // becomes reachable through the top-right menu only — and it is
+                // read from its beginning (the user's own question), not from the
+                // bottom of an answer that is still being written.
                 let latestID = turns.last?.id
-                if latestID != lastSeenLatestTurnID {
-                    lastSeenLatestTurnID = latestID
+                let startedNewRound = turns.count > lastSeenTurnCount && latestID != lastSeenLatestTurnID
+                lastSeenLatestTurnID = latestID
+                lastSeenTurnCount = turns.count
+                if startedNewRound {
                     selectedTurnID = nil
+                    if !isRestoringConversation {
+                        scrollModel.startNewTurnFromTop()
+                    }
                 } else if let current = selectedTurnID, !turns.contains(where: { $0.id == current }) {
                     // The selected turn left the loaded window: fall back to the
                     // newest turn instead of showing nothing.
@@ -1154,12 +1168,12 @@ struct WorkspaceView: View {
             preparedTurnIDs = currentTurns.last.map { [$0.id] } ?? []
             preparingTurnID = nil
         }
-        // Re-pin immediately. The size-change anchor keeps the bottom while the
-        // collapse animation contracts the document, and the user message that
-        // follows re-pins through `contentDidChange`; the old 250ms sleep and
-        // the observer's retry window are gone (see SCROLL_DESIGN.md).
+        // A new round opens at its top (the question that was just sent) and
+        // stops following the bottom; the round button or the user scrolling to
+        // the bottom re-enters follow mode. The turn-count snap above repeats
+        // this once the new turn is realized.
         logScroll("submit")
-        scrollModel.pinToBottom()
+        scrollModel.startNewTurnFromTop()
         let submittedAttachments = attachments
         let imageAttachments = submittedAttachments.compactMap(\.dataURL)
         if question.isEmpty, !attachments.isEmpty {
