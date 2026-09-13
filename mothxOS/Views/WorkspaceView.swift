@@ -42,6 +42,12 @@ struct WorkspaceView: View {
     /// started turn takes over the viewport (requirement: history moves into the
     /// menu) without re-snapping on every streamed chunk.
     @State private var lastSeenLatestTurnID: String?
+    /// Bumped at the start of every conversation restore and used as the scroll
+    /// view's identity. A fresh scroll view is the only reliable way to discard
+    /// the previous conversation's clip origin: reusing one lets a deeply
+    /// scrolled offset (thousands of points) outlive the content it belonged to,
+    /// and the restored conversation then paints blank until the user scrolls.
+    @State private var conversationIdentity = 0
     @State private var forkingMessageID: String?
     @State private var forkErrorMessage: String?
     @State private var reviewedChanges: MothxTurnChanges?
@@ -229,6 +235,11 @@ struct WorkspaceView: View {
                             .padding(28)
                             .frame(maxWidth: .infinity)
                         }
+                        // A new conversation gets a brand-new scroll view, so
+                        // the previous one's scroll offset cannot survive into
+                        // it (`.defaultScrollAnchor(.initialOffset)` then applies
+                        // to the fresh view and opens it at the bottom).
+                        .id(conversationIdentity)
                         .coordinateSpace(name: "conversation-scroll")
                         // Anchor the first paint (and, while the newest turn is
                         // displayed, every content-size change) to the bottom, so
@@ -248,6 +259,10 @@ struct WorkspaceView: View {
                         // in flight, and it runs *after* the update commits —
                         // which is exactly what used to race the LazyVStack.
                         .task(id: scrollModel.request.revision) {
+                            // A request that predates the current restore must
+                            // not position the new conversation; the restore
+                            // issues its own jump once the content is committed.
+                            guard !scrollModel.isSuppressed else { return }
                             await performScrollRequest(reader)
                         }
                         .onChange(of: mothx.messagesBySession[sessionID] ?? []) { _, _ in
@@ -460,6 +475,10 @@ struct WorkspaceView: View {
                 // session never renders stale turns while its messages are
                 // loading, and the final scroll lands against this session's
                 // own collapsed layout.
+                // New scroll view for the new conversation, in the same update
+                // that drops the old turns, so the previous offset can never be
+                // observed by the restored content.
+                conversationIdentity += 1
                 currentTurns = []
                 selectedTurnID = nil
                 lastSeenLatestTurnID = nil
@@ -544,7 +563,19 @@ struct WorkspaceView: View {
                 isRestoringConversation = false
                 logScroll("restoreEnd", "turns=\(currentTurns.count)")
                 scrollModel.endConversationReset()
-                scrollModel.requireJump(.restored, force: true)
+                // The previous conversation could have been scrolled to any
+                // depth. Re-assert the bottom across a few frames (each pass
+                // runs after the update commits) so the turn body, its Markdown
+                // and its images are all laid out before the final position is
+                // decided — a single jump can land against a document that is
+                // still growing and leave the restored conversation blank.
+                for attempt in 0..<4 {
+                    scrollModel.requireJump(.restored, force: true)
+                    guard attempt < 3 else { break }
+                    await awaitMainRunLoopTurn()
+                    guard !Task.isCancelled,
+                          sessionRestoreGeneration == restoreGeneration else { return }
+                }
                 prefetchPreviewCache()
             }
         }

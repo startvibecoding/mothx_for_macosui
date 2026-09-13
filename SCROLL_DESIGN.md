@@ -43,10 +43,11 @@ ScrollView {
 .task(id: model.request.revision) { … }   // 唯一定位执行点
 ```
 
-- **首帧**：`.defaultScrollAnchor(.bottom, for: .initialOffset)`（15+）/ `.defaultScrollAnchor(.bottom)`（14）——恢复/切会话天然落在底部，不再需要“恢复结束后补滚”。
+- **每个会话一个全新 ScrollView**：`.id(conversationIdentity)`，在恢复开始的那一次更新里与清空轮次同时生效。复用同一个 ScrollView 时，上一个会话深达数千点的 clip origin 会在内容被替换后存活，新会话渲染在无效偏移处 → 空白（BUG-0014 的复发，见 `BUGFIXES.md` 第 2 节）。身份重置同时让 `.initialOffset` 对新会话重新生效。
+- **首帧**：`.defaultScrollAnchor(.bottom, for: .initialOffset)`（15+）/ `.defaultScrollAnchor(.bottom)`（14）——恢复/切会话天然落在底部。
 - **增长跟随**：`.defaultScrollAnchor(.bottom, for: .sizeChanges)`（15+）。
 - **探测**：`onScrollGeometryChange`（15+，变换成 `Bool` 减少刷新）+ `onScrollPhaseChange`（15+，判定用户滚动）；macOS 14 用只读 `ConversationVisibilityObserver` 上报 `(contentHeight, offsetY, viewportHeight)`，并按“内容高度未变却偏离底部 = 用户滚动”的启发式判定。
-- **定位**：只保留一条 `ScrollViewReader.scrollTo(conversationBottomID, anchor: .bottom)`，由 `.task(id:)` 驱动（同帧多次请求自动合并），macOS 14 允许**最多 1 次**延迟重发后停止。
+- **定位**：只保留一条 `ScrollViewReader.scrollTo(锚点, anchor:)`（锚点 = `conversationTopID` / `conversationBottomID`），由 `.task(id:)` 驱动（同帧多次请求自动合并）；`.task` 在 `isSuppressed`（恢复中）直接返回，避免早于本次恢复的旧请求给新会话定位；恢复结束由 WorkspaceView **按帧重复发 4 次**定位请求（每次都在更新提交之后执行），保证正文/Markdown/图片都排版完毕后再决定最终位置。
 
 ### 3.3 删除清单
 
@@ -94,6 +95,7 @@ ScrollView {
 | P3 | `533b39e` | 定位收敛为单条 `ScrollViewReader.scrollTo`，删除 `ConversationScrollObserver`（470 行）与三个 token |
 | P4 | `5f65a81` | `defaultScrollAnchor` 锚定首帧/变长，删除提交 250ms 补滚 |
 | P4.1 | `7bd565a` | 首个 `scrollTo` 放到无挂起点的同步前缀，避免流式突发把跟随滚动饿死 |
+| 复发修复 | 见提交 | 切会话空白复发：`conversationIdentity` 给每个会话全新 ScrollView + 恢复结束按帧重复定位（BUGFIXES 第 2 节） |
 
 最终形态：`WorkspaceView` 净减 ~540 行；`ConversationScrollObserver`、`settleAfterScroll`、`retryScrollToBottomIfNeeded`、`clampScrollOffsetIfNeeded`、`scrollToBottomNow`、`applySessionResetIfNeeded`、`conversationLayoutID`、`scrollToBottomRequest`、`conversationSessionToken`、`isConversationAtBottom` 全部不存在。
 

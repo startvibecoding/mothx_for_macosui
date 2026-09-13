@@ -38,7 +38,7 @@
 
 > 说明：`88e900d` / `a72175c` / `5c81eeb` 的提交信息较笼统，根因一栏依据 diff 归纳；如后续定位到更准确的根因，直接在该行「根因」补充，不要另起新行。
 >
-> BUG-0014 / BUG-0015 / BUG-0016 为同一次开发中的修复。其中 BUG-0014 与 BUG-0016 描述的是**当时的 AppKit 观察者机制**（settle 20 次、`resolvedScrollView()`、`onSettleFinished` 回调等）；这些代码已由 BUG-0017 的单一 owner 设计整体删除，历史条目按“只增不改”规则保留作为当时记录，**其防护点以 BUG-0017 为准**。
+> BUG-0014 / BUG-0015 / BUG-0016 为同一次开发中的修复。其中 BUG-0014 与 BUG-0016 描述的是**当时的 AppKit 观察者机制**（settle 20 次、`resolvedScrollView()`、`onSettleFinished` 回调等）；这些代码已由 BUG-0017 的单一 owner 设计整体删除，历史条目按“只增不改”规则保留作为当时记录，**其防护点以 BUG-0017 为准**（并在第 2 节记录了 BUG-0014 的复发与最终处理）。
 
 ---
 
@@ -46,7 +46,7 @@
 
 | 原 BUG | 复发日期 | 提交 | 现象 | 为何复发 | 处理 |
 | --- | --- | --- | --- | --- | --- |
-| （暂无） | | | | | |
+| BUG-0014 | 2026-09-13 | `533b39e`（P3） | 切换会话后会话区仍然空白，从“滚动位置较深”的会话切走时必现，需手动滚屏 | BUG-0014 当时的修复靠 `ConversationScrollObserver.applySessionResetIfNeeded` 在切换时把视口归零；P3 按 BUG-0017 的设计删除整个 AppKit 观察者时，把“切会话丢弃上一个会话的偏移”这一项一并删了。新架构下 `ScrollView` 身份不随会话变化，上一个会话深达数千点的 clip origin 会在内容被替换后存活，新会话因此渲染在无效偏移处 → 空白 | 用 `conversationIdentity` 给每个会话一个**全新 ScrollView**（与清空轮次在同一次更新里生效，使 `.defaultScrollAnchor(.initialOffset)` 重新生效），并在内容加载完毕后按帧重复定位 4 次（恢复结束再调一次以上滚动条）；另在 `.task(id:)` 上挡住早于本次恢复的旧请求 |
 
 新增规则：如果某个已修复问题再次出现，先在此表登记，再修复，最后回到第 1 节确认原条目的「回归防护点」是否要补充。
 
@@ -64,7 +64,7 @@
 
 - 会话/流式：运行中不得用服务端快照整体替换本地消息（BUG-0004）；历史轮次保持静态，只有最后一轮更新。
 - 轮次展示：任意时刻只渲染一轮（最新轮次为默认），历史轮次只能通过右上角 `…` 菜单进入；不得恢复逐轮 accordion/`showAllHistory`；显示非最新轮次时必须提供“回到最新轮次”入口，新一轮开始时自动切回最新轮次；非最新轮次的底部定位用 `.top` 锥点且 `followBottom=false`，且不得开启 `defaultScrollAnchor(.sizeChanges)`（否则正文提交会被拽到该轮末尾）。
-- 会话恢复：切换会话必须先清空 + 加载态，恢复完成后再滚动定位（BUG-0005）；恢复期间不得发滚动请求，`ConversationScrollModel.isSuppressed` 期间只允许“恢复结束”那一次显式定位（BUG-0014 → 以 BUG-0017 为准）。
+- 会话恢复：切换会话必须先清空 + 加载态，恢复完成后再滚动定位（BUG-0005 / BUG-0014，防护点以 BUG-0017 + 第 2 节复发处理为准）：每个会话必须拿到**全新 ScrollView**（`conversationIdentity`，不得复用上一个会话的滚动视图/偏移）；恢复期间不得发滚动请求（`isSuppressed`），内容加载完毕后再重复定位（按帧重发，不得只发一次）。
 - 滚动定位：滚动所有权只属 SwiftUI。不得出现 `NSClipView.scroll`/直接改 clip origin、settle 循环、`documentView.bounds.height` 重试窗口或提交后 sleep 补滚（BUG-0016/0017）；底部检测用 `onScrollGeometryChange`+`onScrollPhaseChange`（15+）或只读 `ConversationVisibilityObserver`（14）；首帧/变长靠 `defaultScrollAnchor`；`followBottom` 是“是否跟随”的唯一门，用户上滑后不得被拽回。
 - 流式打字机：已显示进度必须来自 `TypewriterProgressStore`（可跨 LazyVStack 回收恢复），不得退回只靠 @State 计数（BUG-0015）；有界窗口只裁头部，不能整段清空重打（BUG-0004）。
 - 输入框：编辑/IME 组合期间不得写回 binding 覆盖输入（BUG-0006）。
