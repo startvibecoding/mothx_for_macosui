@@ -627,13 +627,14 @@ struct WorkspaceView: View {
     /// committed — which is what used to make `scrollTo` race the LazyVStack.
     private func performScrollRequest(_ reader: ScrollViewProxy) async {
         let request = scrollModel.request
-        await awaitMainRunLoopTurn()
-        guard !Task.isCancelled else { return }
+        // Synchronous prefix. A newer request restarts this `.task`, but the
+        // restart cannot interrupt code that has no suspension point, so the
+        // follow scroll can never be starved by a fast stream of updates.
         scrollToBottom(reader, animated: request.animated)
-        guard #unavailable(macOS 15.0) else { return }
-        // macOS 14 fallback: `scrollTo` can still land before the lazy stack
-        // committed its height, so allow one bounded re-issue and then stop.
-        // No settle loops, timers or height arithmetic.
+        // One bounded re-issue after the layout pass, for the case where the
+        // lazy stack had not committed its height yet. Best effort: a newer
+        // request may cancel it, and that request re-scrolls itself. No settle
+        // loops, timers or height arithmetic.
         await awaitMainRunLoopTurn()
         guard !Task.isCancelled else { return }
         scrollToBottom(reader, animated: false)
