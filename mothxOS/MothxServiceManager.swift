@@ -3017,9 +3017,14 @@ final class MothxServiceManager: ObservableObject {
             }
         }
         await flush()
-        // Preserve a live binding for any turn the rebuild could not resolve
-        // yet, so a card never disappears just because a later rebuild ran.
-        changesByMessage[sessionID] = previousBindings.merging(rebuilt) { _, new in new }
+        // Turns outside the loaded window keep their binding (they cannot be
+        // judged here). A turn **inside** the window whose Run this pass could
+        // not resolve gets no binding at all: keeping the previous one is what
+        // let a mis-attributed card survive a rebuild.
+        let windowUserIDs = Set(messages.filter(\.isUser).map(\.id))
+        var merged = previousBindings.filter { !windowUserIDs.contains($0.key) }
+        merged.merge(rebuilt) { _, new in new }
+        changesByMessage[sessionID] = merged
         persistChanges()
     }
 
@@ -3179,25 +3184,47 @@ final class MothxServiceManager: ObservableObject {
             let runs = (Array(latestByIntent.values) + noIntentRuns).sorted {
                 ($0.startedAt ?? .distantPast) < ($1.startedAt ?? .distantPast)
             }
-            // A run maps to a user turn, not necessarily to an assistant
-            // message: cancelled/tool-only turns have no assistant result.
-            var turnMessageIDs: [String] = []
-            var seenUser = false
-            for message in messages {
-                if message.isUser {
-                    // The user entry is the stable anchor for every turn,
-                    // including cancelled runs with no assistant message.
-                    turnMessageIDs.append(message.id)
-                    seenUser = true
+
+            // Bind each Run to its own turn **by identity**, never by position.
+            //
+            // mothx admits a conversation Run's user entry under the
+            // deterministic id `run-user-<runID>` (a retry reuses the turn it
+            // retries), and that entry id *is* the transcript message id the
+            // turn is keyed on. Pairing by index instead compared two windows
+            // that cover different spans — `messages?limit=200` holds a handful
+            // of turns while `runs?limit=200` holds up to 200 — so the oldest
+            // run in the window was bound to the newest turn and one turn showed
+            // another turn's file changes.
+            let retryParent: [String: String] = decodedRuns.reduce(into: [:]) { acc, run in
+                if let retry = run.retryOfID, !retry.isEmpty { acc[run.id] = retry }
+            }
+            func rootRunID(of run: MothxRunSummary) -> String {
+                var current = run.id
+                var hops = 0
+                while hops < 8, let parent = retryParent[current], !parent.isEmpty {
+                    current = parent
+                    hops += 1
+                }
+                return current
+            }
+            let userMessageIDs = messages.filter(\.isUser).map(\.id)
+            let userIDSet = Set(userMessageIDs)
+            var mapping: [String: MothxRunSummary] = [:]
+            var unmatched = 0
+            // Newest first, so the newest attempt owns the turn.
+            for run in runs.reversed() {
+                let entryID = "run-user-" + rootRunID(of: run)
+                guard userIDSet.contains(entryID) else {
+                    unmatched += 1
                     continue
                 }
-                guard seenUser else { continue }
+                if mapping[entryID] == nil { mapping[entryID] = run }
             }
-            let pairCount = min(runs.count, turnMessageIDs.count)
-            guard pairCount > 0 else { return }
-            var mapping: [String: MothxRunSummary] = [:]
-            for i in 0..<pairCount {
-                mapping[turnMessageIDs[i]] = runs[i]
+            if unmatched > 0 {
+                recordRuntimeLog(
+                    "changes",
+                    "historical run pairing session=\(sessionID) runs=\(runs.count) bound=\(mapping.count) unmatched=\(unmatched) userTurns=\(userMessageIDs.count)"
+                )
             }
             historicalRunsByMessage[sessionID] = mapping
         } catch {
@@ -3309,6 +3336,7 @@ final class MothxServiceManager: ObservableObject {
         return MothxRunSummary(
             id: id,
             intentID: (item["IntentID"] as? String) ?? (item["intentId"] as? String) ?? (item["intentID"] as? String),
+            retryOfID: (item["RetryOf"] as? String) ?? (item["retryOf"] as? String),
             status: status,
             startedAt: parseDate(item["StartedAt"] ?? item["startedAt"]),
             finishedAt: parseDate(item["FinishedAt"] ?? item["finishedAt"]),
