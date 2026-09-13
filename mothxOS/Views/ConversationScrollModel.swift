@@ -319,3 +319,22 @@ extension View {
         }
     }
 }
+
+extension View {
+    /// Anchors the conversation to its bottom.
+    ///
+    /// `initialOffset` makes the first paint land at the bottom, so a restored
+    /// or switched conversation never opens off-screen; on macOS 15+
+    /// `sizeChanges` keeps it pinned while streamed content grows. Together they
+    /// replace the old “settle for N frames / retry for 4 seconds” heuristics.
+    @ViewBuilder
+    func conversationBottomAnchoring() -> some View {
+        if #available(macOS 15.0, *) {
+            self
+                .defaultScrollAnchor(.bottom, for: .initialOffset)
+                .defaultScrollAnchor(.bottom, for: .sizeChanges)
+        } else {
+            defaultScrollAnchor(.bottom)
+        }
+    }
+}

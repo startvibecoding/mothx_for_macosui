@@ -195,6 +195,11 @@ struct WorkspaceView: View {
                             .frame(maxWidth: .infinity)
                         }
                         .coordinateSpace(name: "conversation-scroll")
+                        // Anchor the first paint (and, on macOS 15+, every
+                        // content-size change) to the bottom, so a restored or
+                        // switched conversation opens at the bottom and a
+                        // streaming reply stays pinned without any settle loop.
+                        .conversationBottomAnchoring()
                         // Bottom detection and positioning both belong to
                         // SwiftUI now: `onScrollGeometryChange` (+ scroll phase)
                         // on macOS 15, a read-only AppKit probe on macOS 14.
@@ -1016,18 +1021,12 @@ struct WorkspaceView: View {
             preparedTurnIDs.removeAll()
             preparingTurnID = nil
         }
-        // The collapse animation shrinks the document over the 0.2s above.
-        // Re-anchor the scrollbar only after the collapsed layout has
-        // committed; a scroll issued against the pre-collapse document height
-        // would leave the viewport off the true conversation bottom once the
-        // topics have contracted. The observer's retry logic then re-lands the
-        // bottom as the incoming user message grows the document again.
-        Task { @MainActor in
-            try? await Task.sleep(for: .milliseconds(250))
-            guard !Task.isCancelled else { return }
-            logScroll("submit")
-            scrollModel.pinToBottom()
-        }
+        // Re-pin immediately. The size-change anchor keeps the bottom while the
+        // collapse animation contracts the document, and the user message that
+        // follows re-pins through `contentDidChange`; the old 250ms sleep and
+        // the observer's retry window are gone (see SCROLL_DESIGN.md).
+        logScroll("submit")
+        scrollModel.pinToBottom()
         let submittedAttachments = attachments
         let imageAttachments = submittedAttachments.compactMap(\.dataURL)
         if question.isEmpty, !attachments.isEmpty {
