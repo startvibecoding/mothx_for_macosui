@@ -266,6 +266,7 @@ struct WorkspaceView: View {
                             guard mothx.runSessionID == sessionID else { return }
                             let terminalStatuses = ["completed", "succeeded", "failed", "error", "cancelled", "canceled", "timed_out", "timeout", "expired", "incomplete"]
                             if terminalStatuses.contains((mothx.runStatus ?? "").lowercased()) {
+                                logScroll("runTerminal", "status=\(mothx.runStatus ?? "nil") turns=\(currentTurns.count)")
                                 conversationLayoutID += 1
                                 requestScrollToBottom()
                             } else if mothx.isRunning {
@@ -278,12 +279,14 @@ struct WorkspaceView: View {
                             // streaming projection. Re-anchor after the
                             // terminal layout has committed so the old clip
                             // origin cannot leave a blank viewport.
+                            logScroll("runIdle", "turns=\(currentTurns.count)")
                             conversationLayoutID += 1
                             requestScrollToBottom()
                         }
                         .onChange(of: reviewedChanges == nil) { _, isClosed in
                             conversationLayoutID += 1
                             guard isClosed, conversationWasAtBottomBeforeReview else { return }
+                            logScroll("reviewClosed")
                             requestScrollToBottom()
                         }
                         .onAppear {
@@ -529,6 +532,7 @@ struct WorkspaceView: View {
                 // pre-restore height and leave the viewport blank).
                 isRestoringConversation = false
                 conversationLayoutID += 1
+                logScroll("restoreEnd", "turns=\(currentTurns.count)")
                 requestScrollToBottom()
                 prefetchPreviewCache()
             }
@@ -638,6 +642,13 @@ struct WorkspaceView: View {
 
     private func requestScrollToBottom() {
         scrollToBottomRequest += 1
+    }
+
+    /// Scroll diagnostics. Metadata only (reason, booleans, point heights) so a
+    /// stuck/blank viewport can be diagnosed from `runtime.log` without ever
+    /// recording transcript text or user content. See SCROLL_DESIGN.md.
+    private func logScroll(_ event: String, _ detail: String = "") {
+        mothx.recordRuntimeLog("scroll", detail.isEmpty ? event : "\(event) \(detail)")
     }
 
     /// Suspends until the main queue has delivered the next turn. Unlike
@@ -1051,6 +1062,7 @@ struct WorkspaceView: View {
         Task { @MainActor in
             try? await Task.sleep(for: .milliseconds(250))
             guard !Task.isCancelled else { return }
+            logScroll("submit")
             requestScrollToBottom()
         }
         let submittedAttachments = attachments
@@ -2439,6 +2451,10 @@ private struct ConversationScrollObserver: NSViewRepresentable {
                 scrollView.reflectScrolledClipView(clipView)
                 moved = true
             }
+            RuntimeLog.shared.write(
+                "scroll",
+                "jump moved=\(moved) fromY=\(Int(currentY)) toY=\(Int(maxY)) docH=\(Int(documentHeight)) clipH=\(Int(clipHeight))"
+            )
             if moved {
                 // Force the newly visible region to realize and draw. Without
                 // this, the jump can land on a valid offset that still paints
@@ -2484,6 +2500,7 @@ private struct ConversationScrollObserver: NSViewRepresentable {
             let atBottom = distanceToBottom <= 50
             guard lastBottomState != atBottom else { return }
             lastBottomState = atBottom
+            RuntimeLog.shared.write("scroll", "atBottom=\(atBottom) gap=\(Int(distanceToBottom))")
 
             // Scroll notifications can arrive while SwiftUI is reconciling the
             // NSViewRepresentable. Publishing the binding synchronously from
