@@ -232,6 +232,11 @@ final class MothxServiceManager: ObservableObject {
     private var rawSettings: [String: Any] = [:]
     private var mcpConfigLoaded = false
 
+    /// Mothx runtime version from the ACP `initialize` handshake, used to
+    /// decide whether ACP already auto-loads global+project MCP config (see
+    /// `mcpServersForACP`). nil until the ACP transport has connected once.
+    private(set) var acpRuntimeVersion: String?
+
     /// Thinking text is transient UI state. Keep only the tail so a long run
     /// cannot grow an unbounded string while ACP or Serve streams deltas.
     private static let maximumThinkingLines = 200
@@ -1489,6 +1494,7 @@ final class MothxServiceManager: ObservableObject {
             environment: await Self.loginShellEnvironment(),
             options: MothxACPLaunchOptions(tools: tools)
         )
+        acpRuntimeVersion = acpClient.serverVersion
     }
 
     private func submitACPRun(
@@ -4534,10 +4540,31 @@ final class MothxServiceManager: ObservableObject {
     /// MCP servers serialized to the JSON shape expected by ACP
     /// `session/new` / `session/resume` (`mcpServers` array).
     private var mcpServersForACP: [[String: Any]] {
+        // Newer mothx runtimes natively load global + project `mcp.json` on
+        // `session/new|resume` (ConnectConfiguredMCP) and then append the
+        // request's `mcpServers` without deduplication — a duplicate name is a
+        // hard error that fails the whole session. Forwarding the global list
+        // again would therefore break every ACP session for those users, so
+        // once the runtime is known to have the native merge we send nothing.
+        // Older runtimes (the npm package as of 1.3.100) rely on the forwarded
+        // list, so we keep the legacy behavior below the threshold.
+        if let version = acpRuntimeVersion,
+           RuntimeInstall.compareVersion(version, Self.acpNativeMCPMergeMinVersion) >= 0 {
+            return []
+        }
         guard let data = try? JSONEncoder().encode(mcpServers),
               let array = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]] else { return [] }
         return array
     }
+
+    /// First runtime version with ACP-native global+project MCP merging
+    /// (`ConnectConfiguredMCP`). The feature is ⚠️发版 — present in the local
+    /// mothx source but not yet in any npm `mothx-installer` release (current
+    /// package is 1.3.100). Bump this constant when the package that ships it
+    /// is known; any runtime strictly newer than 1.3.100 is treated as having
+    /// the merge (safe: if a mid-version lacks it, MCP just falls back to the
+    /// server-side auto-load in the serve transport).
+    private static let acpNativeMCPMergeMinVersion = "1.3.101"
 
     /// Searches the official MCP Registry (public endpoint, no auth). Results
     /// are deduplicated by server name because the registry returns one row per
@@ -4954,7 +4981,7 @@ final class MothxServiceManager: ObservableObject {
     /// merged into the drained pipe rather than left in a separate unread
     /// pipe — an interactive shell's rc-file output can otherwise fill an
     /// unread pipe's buffer and hang the child process indefinitely.
-    private static func shellCapturedPath(_ command: String) async -> String? {
+    static func shellCapturedPath(_ command: String) async -> String? {
         await withCheckedContinuation { continuation in
             DispatchQueue.global(qos: .userInitiated).async {
                 let process = Process()

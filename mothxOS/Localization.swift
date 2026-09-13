@@ -406,6 +406,39 @@ struct Copy {
     var mcpMarketLoadMore: String { text("加载更多", "Load more") }
     var mcpMarketHint: String { text("来自官方 MCP Registry 的公开目录，数据由社区/厂商发布；加入后请核对命令、参数与密钥再保存。", "Public catalog from the official MCP Registry, published by the community/vendors. Verify command, args, and secrets before saving.") }
 
+    // MARK: - Computer Use
+
+    var computerUse: String { text("电脑控制", "Computer Use") }
+    var computerUseSubtitle: String { text("让 Agent 通过截图与鼠标键盘操作本机桌面", "Let the agent operate the local desktop via screenshots and mouse/keyboard") }
+    var selectProject: String { text("选择项目", "Select project") }
+    var computerUseEnable: String { text("为本项目启用 Computer Use", "Enable Computer Use for this project") }
+    var computerUseEnableHint: String { text("启用后 Agent 会自动操作本机鼠标键盘且无需逐次确认，请随时用「停止」中断。", "Once enabled, the agent can drive your mouse and keyboard without asking each time. Use Stop to interrupt at any moment.") }
+    var computerUseInstalling: String { text("安装中…", "Installing…") }
+    var computerUseUninstalling: String { text("卸载中…", "Uninstalling…") }
+    var computerUseInstalled: String { text("已启用（新会话生效）", "Enabled (takes effect on new sessions)") }
+    var computerUseNotInstalled: String { text("未启用", "Not enabled") }
+    var computerUseStatus: String { text("状态", "Status") }
+    var computerUseNodeMissing: String { text("未找到 Node.js，请先完成环境检查中的 Node 安装。", "Node.js not found. Complete the Node install in Environment Check first.") }
+    var computerUseServerVersion: String { text("服务器版本", "Server version") }
+    var computerUseOutdated: String { text("有新版本待安装", "A new version is available") }
+    var computerUseScreenRecording: String { text("屏幕录制", "Screen Recording") }
+    var computerUseAccessibility: String { text("辅助功能", "Accessibility") }
+    var computerUsePermissionOK: String { text("已授权", "Granted") }
+    var computerUsePermissionDenied: String { text("未授权", "Not granted") }
+    var computerUsePermissionUnknown: String { text("未知", "Unknown") }
+    var computerUseOpenScreenRecordingSettings: String { text("打开屏幕录制设置", "Open Screen Recording settings") }
+    var computerUseOpenAccessibilitySettings: String { text("打开辅助功能设置", "Open Accessibility settings") }
+    var computerUseRecheck: String { text("重新检测", "Re-check") }
+    var computerUseShotsDir: String { text("截图目录", "Screenshots directory") }
+    var computerUseShotsDirExists: String { text("已生成（.mothx/computer-use/）", "Present (.mothx/computer-use/)") }
+    var computerUseShotsDirMissing: String { text("尚无截图（首次截图后生成）", "None yet (created on first screenshot)") }
+    var computerUseProjectNoSession: String { text("该项目还没有会话，请先发起一次对话再启用。", "This project has no session yet. Start a conversation first.") }
+    var computerUseNeedNewSession: String { text("已为本项目启用；新会话生效（当前会话可能仍不可用）。", "Enabled for this project; takes effect on new sessions (the current session may still be unavailable).") }
+    var computerUseErrorTitle: String { text("Computer Use 操作失败", "Computer Use failed") }
+    var computerUseConflict: String { text("项目 mcp.json 已存在名为 computer 的条目，请先在 MCP 配置中重命名或删除它。", "The project mcp.json already has an entry named computer. Rename or remove it in the MCP settings first.") }
+    var computerUseFullCleanup: String { text("彻底清理（删除已安装的 server.js）", "Full cleanup (delete the installed server.js)") }
+    var computerUseCleaned: String { text("已清理", "Cleaned up") }
+
     // MARK: - About
     var about: String { text("关于软件", "About") }
     var advancedSettings: String { text("高级设置", "Advanced settings") }

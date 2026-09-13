@@ -14,9 +14,22 @@ struct TextMessageBubble: View {
 
     private var isUser: Bool { message.isUser }
 
-    @State private var displayedCharCount = 0
+    /// Absolute number of characters of the running reply revealed so far.
+    /// Monotonic for the lifetime of a message and persisted in
+    /// `TypewriterProgressStore` keyed by message id, so a re-appearance (lazy
+    /// stack recycling, turn re-ready, session switch) resumes instead of
+    /// wiping the text and typing it again from the first character.
+    @State private var revealedCount = 0
+    /// The bubble only ever holds a bounded window of the reply so a very long
+    /// result is not re-materialized on every tick. `windowText` is the source
+    /// slice starting at absolute offset `windowBase`; `foldedCount` is the
+    /// absolute end offset already folded into the window.
+    @State private var windowBase = 0
+    @State private var windowText = ""
+    @State private var foldedCount = 0
     @State private var typewriterTimer: Timer?
     @State private var blinkOpacity: Double = 1.0
+    @State private var didStartBlink = false
     // Tracks the latest known text while running; the Timer closure reads
     // this @State (stable storage) instead of `message` (a frozen value-type
     // snapshot from whenever the closure was created), so newly polled
@@ -25,9 +38,18 @@ struct TextMessageBubble: View {
     @State private var isHovered = false
     @State private var didCopy = false
 
+    /// While running, at most this many characters are retained/typed. Older
+    /// text is trimmed from the front rather than the whole result being
+    /// cleared and re-typed from zero.
+    private static let maxLiveCharacters = 8_000
+
+    private var windowEnd: Int { windowBase + windowText.count }
+
     private var displayText: String {
-        if isCurrentRunning { return String(typingTarget.prefix(displayedCharCount)) }
-        return message.displayText
+        guard isCurrentRunning else { return message.displayText }
+        let revealed = max(0, min(revealedCount - windowBase, windowText.count))
+        let text = String(windowText.prefix(revealed))
+        return windowBase > 0 ? "…\n" + text : text
     }
 
     var body: some View {
@@ -69,51 +91,140 @@ struct TextMessageBubble: View {
         }
         .frame(maxWidth: .infinity, alignment: isUser ? .trailing : .leading)
         .onHover { isHovered = $0 }
-        .onAppear {
-            if isCurrentRunning && !message.displayText.isEmpty {
-                typingTarget = message.displayText
-                startTypewriter()
-            } else {
-                displayedCharCount = message.displayText.count
-            }
-        }
+        .onAppear { syncTypewriterOnAppear() }
         .onChange(of: message.displayText) { _, newText in
+            typingTarget = newText
+            foldContent(newText)
             if isCurrentRunning {
-                // New content arrived from polling — extend the typing
-                // target and keep (or restart) the timer so it keeps
-                // catching up smoothly instead of stalling.
-                typingTarget = newText
-                if typewriterTimer == nil { startTypewriter(resetProgress: false) }
+                // New content arrived from polling — extend the typing target
+                // and keep (or restart) the timer so it keeps catching up
+                // smoothly instead of stalling. Progress is never rewound.
+                if revealedCount < windowEnd, typewriterTimer == nil {
+                    startTypewriter()
+                }
             } else {
-                typewriterTimer?.invalidate(); typewriterTimer = nil
-                displayedCharCount = newText.count
+                // Completed message: show the full text and remember it so a
+                // later re-appearance cannot rewind the bubble.
+                stopTypewriter()
+                revealedCount = windowEnd
+                TypewriterProgressStore.shared.set(newText.count, for: message.id)
             }
         }
         .onChange(of: isCurrentRunning) { _, running in
-            if !running {
+            typingTarget = message.displayText
+            foldContent(typingTarget)
+            if running {
+                // The run (re)attached. Resume from the remembered progress;
+                // never clear the already-typed text and start over.
+                let stored = TypewriterProgressStore.shared.count(for: message.id) ?? revealedCount
+                revealedCount = min(max(revealedCount, stored), windowEnd)
+                if revealedCount < windowEnd { startTypewriter() } else { stopTypewriter() }
+            } else {
                 // Run finished (or its grace period ended) — stop and show
                 // whatever text remains in full rather than freezing mid-type.
-                typewriterTimer?.invalidate(); typewriterTimer = nil
-                displayedCharCount = message.displayText.count
+                stopTypewriter()
+                revealedCount = windowEnd
+                TypewriterProgressStore.shared.set(typingTarget.count, for: message.id)
             }
         }
-        .onDisappear { typewriterTimer?.invalidate(); typewriterTimer = nil }
+        .onDisappear { stopTypewriter() }
     }
 
-    private var isTyping: Bool { isCurrentRunning && displayedCharCount < typingTarget.count }
+    private var isTyping: Bool { isCurrentRunning && revealedCount < windowEnd }
 
-    private func startTypewriter(resetProgress: Bool = true) {
-        if resetProgress { displayedCharCount = 0 }
-        typewriterTimer?.invalidate()
-        typewriterTimer = Timer.scheduledTimer(withTimeInterval: 0.02, repeats: true) { _ in
-            if displayedCharCount < typingTarget.count {
-                displayedCharCount += 1
+    /// Resolves what to show the first time this bubble appears in the current
+    /// view tree. A running message resumes from the persisted progress (or
+    /// starts from zero on a genuine first appearance); a finished message is
+    /// shown in full immediately.
+    private func syncTypewriterOnAppear() {
+        typingTarget = message.displayText
+        if isCurrentRunning {
+            let stored = TypewriterProgressStore.shared.count(for: message.id) ?? 0
+            rebuildWindow(from: typingTarget, revealed: stored)
+            if revealedCount < windowEnd {
+                startTypewriter()
+            } else {
+                stopTypewriter()
+                TypewriterProgressStore.shared.set(revealedCount, for: message.id)
             }
-            // Don't invalidate on catching up — more text may still arrive
-            // from the next poll while the run is in progress; onDisappear
-            // and the isCurrentRunning onChange handle teardown instead.
+        } else {
+            rebuildWindow(from: typingTarget, revealed: typingTarget.count)
+            stopTypewriter()
+            TypewriterProgressStore.shared.set(typingTarget.count, for: message.id)
         }
+    }
+
+    /// Folds newly streamed characters into the bounded window. The reply only
+    /// ever grows while running, so the common path appends just the new tail;
+    /// the window is then trimmed from the front to stay within the cap.
+    private func foldContent(_ target: String) {
+        let count = target.count
+        if count <= foldedCount {
+            // The source did not grow (it shrank, or was replaced by a final
+            // projection of the same length) — rebuild around the reveal
+            // cursor so the window can never hold stale characters.
+            rebuildWindow(from: target, revealed: min(revealedCount, count))
+            return
+        }
+        windowText += target.suffix(count - foldedCount)
+        foldedCount = count
+        trimWindow()
+    }
+
+    /// Rebuilds the bounded window as the newest `maxLiveCharacters` of the
+    /// target and clamps the reveal cursor into it, so an already-visible
+    /// prefix is never re-typed from zero and the newest text stays available.
+    private func rebuildWindow(from target: String, revealed: Int) {
+        let count = target.count
+        let base = max(0, count - Self.maxLiveCharacters)
+        let startIndex = target.index(target.startIndex, offsetBy: base)
+        windowBase = base
+        windowText = String(target[startIndex..<target.endIndex])
+        foldedCount = count
+        revealedCount = max(base, min(revealed, count))
+    }
+
+    /// Drops the oldest characters once the window outgrows the cap, keeping
+    /// the newest content (the front is truncated, never the whole result).
+    private func trimWindow() {
+        guard windowText.count > Self.maxLiveCharacters else { return }
+        let drop = windowText.count - Self.maxLiveCharacters
+        windowText.removeFirst(drop)
+        windowBase += drop
+        if revealedCount < windowBase { revealedCount = windowBase }
+        if foldedCount < windowBase { foldedCount = windowBase }
+    }
+
+    private func startTypewriter() {
+        typewriterTimer?.invalidate()
+        // ~8ms per tick with an adaptive step below: a steady stream is typed
+        // at roughly 120 chars/s and a burst is caught up within a few ticks.
+        typewriterTimer = Timer.scheduledTimer(withTimeInterval: 0.008, repeats: true) { _ in
+            advanceTypewriter()
+        }
+        guard !didStartBlink else { return }
+        didStartBlink = true
         withAnimation(.easeInOut(duration: 0.6).repeatForever()) { blinkOpacity = 0.0 }
+    }
+
+    private func stopTypewriter() {
+        typewriterTimer?.invalidate()
+        typewriterTimer = nil
+    }
+
+    private func advanceTypewriter() {
+        let end = windowEnd
+        guard revealedCount < end else {
+            TypewriterProgressStore.shared.set(revealedCount, for: message.id)
+            return
+        }
+        let backlog = end - revealedCount
+        // Adaptive catch-up: reveal proportionally more per tick when far
+        // behind, so a large streamed result is not typed one character at a
+        // time forever.
+        let step = max(1, backlog / 8)
+        revealedCount = min(end, revealedCount + step)
+        TypewriterProgressStore.shared.set(revealedCount, for: message.id)
     }
 
     private var messageMetadata: some View {
@@ -168,6 +279,43 @@ struct TextMessageBubble: View {
     private var assistantBackground: Color { colorScheme == .light ? .white : .codexCard }
     private var userBackground: Color { colorScheme == .light ? Color(red: 0.94, green: 0.94, blue: 0.95) : Color.orange.opacity(0.18) }
 }
+/// Remembers how much of a running reply has already been revealed, keyed by
+/// message id. SwiftUI discards `@State` whenever a bubble is recycled by the
+/// lazy conversation stack or its turn body is re-prepared; without this store
+/// the typewriter would restart from the first character and visibly re-type
+/// (re-load) the whole — potentially very long — result. Progress is kept
+/// monotonic so a bubble never rewinds.
+final class TypewriterProgressStore {
+    static let shared = TypewriterProgressStore()
+
+    private var counts: [String: Int] = [:]
+    /// Insertion order, used to evict the oldest entries so a long-lived app
+    /// session with thousands of messages cannot grow this without bound.
+    private var order: [String] = []
+    private let maxEntries = 400
+
+    private init() {}
+
+    func count(for id: String) -> Int? {
+        counts[id]
+    }
+
+    func set(_ value: Int, for id: String) {
+        guard !id.isEmpty else { return }
+        if counts[id] == nil { order.append(id) }
+        counts[id] = value
+        if order.count > maxEntries {
+            let evicted = order.removeFirst()
+            counts.removeValue(forKey: evicted)
+        }
+    }
+
+    func remove(_ id: String) {
+        counts.removeValue(forKey: id)
+        order.removeAll { $0 == id }
+    }
+}
+
 
 /// Renders a completed assistant response as Markdown while keeping a plain-text
 /// fallback for malformed or unsupported Markdown input. Shared by the session

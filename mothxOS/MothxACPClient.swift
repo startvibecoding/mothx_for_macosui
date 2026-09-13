@@ -65,6 +65,11 @@ actor MothxACPClient {
     typealias LogHandler = @Sendable (String) -> Void
 
     private var process: Process?
+
+    /// Mothx runtime version advertised by the ACP `initialize` handshake
+    /// (`AgentInfo.Version`). nil until the first successful `start()`.
+    private(set) var serverVersion: String?
+
     private var inputHandle: FileHandle?
     private var outputHandle: FileHandle?
     private var errorHandle: FileHandle?
@@ -138,7 +143,7 @@ actor MothxACPClient {
         sessionConfigs.removeAll()
 
         do {
-            _ = try await request(method: "initialize", params: [
+            let initializeResult = try await request(method: "initialize", params: [
                 "protocolVersion": 1,
                 "clientCapabilities": [
                     "session": ["configOptions": ["boolean": [:]]],
@@ -146,6 +151,10 @@ actor MothxACPClient {
                 ],
                 "clientInfo": ["name": "mothxOS", "title": "mothxOS", "version": appVersion],
             ])
+            if let agentInfo = initializeResult["AgentInfo"] as? [String: Any],
+               let version = agentInfo["Version"] as? String, !version.isEmpty {
+                serverVersion = version
+            }
         } catch {
             stop()
             throw error

@@ -54,6 +54,8 @@ struct SettingsView: View {
                     SkillsSection(skillsDir: $skillsDir, sessionID: selectedSessionID)
                 } else if section == "mcp" {
                     MCPSection()
+                } else if section == "computer" {
+                    ComputerUseSection()
                 } else if section == "sessions" {
                     SessionsSection(sessionDir: $sessionDir, showSettings: $showSettings, selectedProjectID: $selectedProjectID, selectedSessionID: $selectedSessionID, pendingDeletion: $pendingDeletion)
                 } else if section == "advanced" {
@@ -178,7 +180,7 @@ struct SettingsNavigation: View {
     @Environment(\.colorScheme) private var colorScheme
     @EnvironmentObject private var languageStore: LanguageStore
     @Binding var section: String
-    var body: some View { let c = languageStore.copy; return VStack(alignment: .leading, spacing: 8) { Text(c.settings.uppercased()).sectionLabel().padding(.bottom, 10); SettingsNavItem(title: c.general, icon: "gearshape", id: "general", section: $section); SettingsNavItem(title: c.providers, icon: "server.rack", id: "providers", section: $section); SettingsNavItem(title: c.skills, icon: "sparkles", id: "skills", section: $section); SettingsNavItem(title: c.mcp, icon: "puzzlepiece.extension", id: "mcp", section: $section); SettingsNavItem(title: c.sessions, icon: "clock", id: "sessions", section: $section); SettingsNavItem(title: c.advancedSettings, icon: "wrench.and.screwdriver", id: "advanced", section: $section); Spacer() }.padding(22).frame(width: 230).background(colorScheme == .light ? .white : .codexSidebar) }
+    var body: some View { let c = languageStore.copy; return VStack(alignment: .leading, spacing: 8) { Text(c.settings.uppercased()).sectionLabel().padding(.bottom, 10); SettingsNavItem(title: c.general, icon: "gearshape", id: "general", section: $section); SettingsNavItem(title: c.providers, icon: "server.rack", id: "providers", section: $section); SettingsNavItem(title: c.skills, icon: "sparkles", id: "skills", section: $section); SettingsNavItem(title: c.mcp, icon: "puzzlepiece.extension", id: "mcp", section: $section); SettingsNavItem(title: c.computerUse, icon: "display", id: "computer", section: $section); SettingsNavItem(title: c.sessions, icon: "clock", id: "sessions", section: $section); SettingsNavItem(title: c.advancedSettings, icon: "wrench.and.screwdriver", id: "advanced", section: $section); Spacer() }.padding(22).frame(width: 230).background(colorScheme == .light ? .white : .codexSidebar) }
 }
 
 struct SettingsNavItem: View { let title: String; let icon: String; let id: String; @Binding var section: String
@@ -1197,6 +1199,254 @@ private struct MCPHelpView: View {
       ]
     }
     """
+}
+
+private struct ComputerUseSection: View {
+    @EnvironmentObject private var mothx: MothxServiceManager
+    @EnvironmentObject private var languageStore: LanguageStore
+
+    /// Empty means no project selected. Computer Use installs at the project
+    /// scope only (see COMPUTER_USE_PLAN_B_MCP.md §5 decision).
+    @State private var scopeProjectID = ""
+    @State private var status = MothxComputerUse.Status()
+    @State private var projectServers: [MothxMCPServer] = []
+    @State private var isLoading = true
+    @State private var isWorking = false
+    @State private var notice: String?
+    @State private var noticeIsError = false
+    @State private var confirmCleanup = false
+
+    private var selectedProject: MothxProject? { mothx.projects.first { $0.id == scopeProjectID } }
+    /// mothx exposes the project-level `mcp.json` through a session in that
+    /// project's workDir, so the project scope needs a matching session.
+    private var anchorSessionID: String? {
+        guard !scopeProjectID.isEmpty else { return nil }
+        return mothx.mcpAnchorSessionID(forProject: scopeProjectID)
+    }
+    private var isScopeBlocked: Bool { !scopeProjectID.isEmpty && anchorSessionID == nil }
+    private var isEnabled: Bool { status.configuredInProject }
+    /// True when the existing `computer` entry was created by this feature
+    /// (recognized by the workdir env marker or the installed script path),
+    /// so an unrelated user server named `computer` is treated as a conflict.
+    private var existingEntryIsManaged: Bool {
+        guard let entry = projectServers.first(where: { $0.name == MothxComputerUse.serverName }) else { return false }
+        return entry.env.contains { $0.name == MothxComputerUse.envWorkDirKey }
+            || entry.args.contains { $0 == MothxComputerUse.serverFileURL.path }
+    }
+
+    var body: some View {
+        let c = languageStore.copy
+        return VStack(alignment: .leading, spacing: 16) {
+            SettingsCard(title: c.computerUse, subtitle: c.computerUseSubtitle) {
+                HStack(spacing: 10) {
+                    Text(c.mcpScope).font(.caption).foregroundStyle(.secondary)
+                    Picker(c.mcpScope, selection: $scopeProjectID) {
+                        Text(c.selectProject).tag("")
+                        ForEach(mothx.projects) { project in
+                            Text(project.name).tag(project.id)
+                        }
+                    }
+                    .labelsHidden()
+                    .frame(maxWidth: 260, alignment: .leading)
+                    Spacer()
+                    Button { Task { await reload() } } label: {
+                        Label(c.computerUseRecheck, systemImage: "arrow.clockwise")
+                    }
+                    .buttonStyle(.bordered)
+                    .disabled(isWorking)
+                }
+                .onChange(of: scopeProjectID) { _, _ in Task { await reload() } }
+
+                if scopeProjectID.isEmpty {
+                    Text(c.selectProject)
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                } else if isScopeBlocked {
+                    Text(c.computerUseProjectNoSession).font(.callout).foregroundStyle(.orange)
+                } else if isLoading {
+                    Text(c.mcpLoading).font(.callout).foregroundStyle(.secondary)
+                } else {
+                    Toggle(isOn: Binding(
+                        get: { isEnabled },
+                        set: { newValue in Task { await setEnabled(newValue) } }
+                    )) {
+                        VStack(alignment: .leading, spacing: 3) {
+                            Text(c.computerUseEnable)
+                            Text(isEnabled ? c.computerUseInstalled : c.computerUseNotInstalled)
+                                .font(.caption)
+                                .foregroundStyle(isEnabled ? .green : .secondary)
+                        }
+                    }
+                    .toggleStyle(.switch)
+                    .disabled(isWorking)
+
+                    Text(c.computerUseEnableHint).font(.caption).foregroundStyle(.secondary)
+
+                    Divider()
+                    statusPanel(c: c)
+
+                    if !status.nodeFound {
+                        Text(c.computerUseNodeMissing).font(.callout).foregroundStyle(.orange)
+                    }
+
+                    HStack(spacing: 10) {
+                        Button { Task { await reload() } } label: {
+                            Label(c.computerUseRecheck, systemImage: "arrow.clockwise")
+                        }.buttonStyle(.bordered).disabled(isWorking)
+                        Button(c.computerUseOpenScreenRecordingSettings) {
+                            MothxComputerUse.openPrivacyPane(screenRecording: true)
+                        }.buttonStyle(.bordered)
+                        Button(c.computerUseOpenAccessibilitySettings) {
+                            MothxComputerUse.openPrivacyPane(screenRecording: false)
+                        }.buttonStyle(.bordered)
+                        Spacer()
+                        Button(role: .destructive) {
+                            confirmCleanup = true
+                        } label: {
+                            Text(c.computerUseFullCleanup)
+                        }
+                        .buttonStyle(.bordered)
+                        .disabled(!status.serverInstalled)
+                    }
+
+                    if let notice {
+                        Text(notice)
+                            .font(.callout)
+                            .foregroundStyle(noticeIsError ? .red : .green)
+                    }
+                }
+            }
+        }
+        .confirmationDialog(c.computerUseFullCleanup, isPresented: $confirmCleanup, titleVisibility: .visible) {
+            Button(c.computerUseFullCleanup, role: .destructive) {
+                MothxComputerUse.removeInstalledServer()
+                Task { await reload() }
+            }
+            Button(c.cancel, role: .cancel) {}
+        }
+        .onAppear { Task { await reload() } }
+    }
+
+    @ViewBuilder
+    private func statusPanel(c: Copy) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text(c.computerUseStatus).font(.caption).foregroundStyle(.secondary)
+            permissionRow(
+                label: c.computerUseScreenRecording,
+                state: status.screenRecording,
+                ok: c.computerUsePermissionOK,
+                denied: c.computerUsePermissionDenied,
+                unknown: c.computerUsePermissionUnknown
+            )
+            permissionRow(
+                label: c.computerUseAccessibility,
+                state: status.accessibility,
+                ok: c.computerUsePermissionOK,
+                denied: c.computerUsePermissionDenied,
+                unknown: c.computerUsePermissionUnknown
+            )
+            if status.serverInstalled {
+                HStack {
+                    Text(c.computerUseServerVersion).font(.caption).foregroundStyle(.secondary)
+                    Text(status.installedVersion ?? "—")
+                        .font(.caption.monospaced())
+                    if status.installedVersion != status.bundledVersion {
+                        Text(c.computerUseOutdated).font(.caption).foregroundStyle(.orange)
+                    }
+                    Spacer()
+                }
+            }
+            HStack {
+                Text(c.computerUseShotsDir).font(.caption).foregroundStyle(.secondary)
+                Text(status.shotsDirectoryExists ? c.computerUseShotsDirExists : c.computerUseShotsDirMissing)
+                    .font(.caption)
+                    .foregroundStyle(status.shotsDirectoryExists ? .green : .secondary)
+                Spacer()
+            }
+        }
+    }
+
+    private func permissionRow(label: String, state: MothxComputerUse.PermissionState, ok: String, denied: String, unknown: String) -> some View {
+        HStack {
+            Text(label).font(.caption).foregroundStyle(.secondary)
+            Spacer()
+            switch state {
+            case .ok: Text(ok).font(.caption).foregroundStyle(.green)
+            case .denied: Text(denied).font(.caption).foregroundStyle(.red)
+            case .unknown: Text(unknown).font(.caption).foregroundStyle(.secondary)
+            }
+        }
+    }
+
+    private func reload() async {
+        guard !scopeProjectID.isEmpty,
+              let workDir = selectedProject?.workDir, !workDir.isEmpty else {
+            isLoading = false
+            notice = nil
+            status = MothxComputerUse.Status()
+            projectServers = []
+            return
+        }
+        isLoading = true
+        notice = nil
+        if let sessionID = anchorSessionID {
+            projectServers = (try? await mothx.loadProjectMCPConfig(sessionID: sessionID)) ?? []
+        } else {
+            projectServers = []
+        }
+        status = await MothxComputerUse.status(workDir: workDir, projectServers: projectServers)
+        isLoading = false
+    }
+
+    private func setEnabled(_ enabled: Bool) async {
+        guard !scopeProjectID.isEmpty,
+              let workDir = selectedProject?.workDir, !workDir.isEmpty,
+              let sessionID = anchorSessionID else { return }
+        isWorking = true
+        notice = nil
+        defer { isWorking = false }
+        do {
+            if enabled {
+                // A pre-existing `computer` entry that is not ours would be
+                // overwritten; refuse and ask the user to rename/remove it in
+                // the MCP settings instead.
+                if projectServers.contains(where: { $0.name == MothxComputerUse.serverName }), !existingEntryIsManaged {
+                    notice = languageStore.copy.computerUseConflict
+                    noticeIsError = true
+                    await reload()
+                    return
+                }
+                _ = try await MothxComputerUse.install(
+                    workDir: workDir,
+                    projectServers: projectServers,
+                    saveServers: { servers in
+                        try await mothx.saveProjectMCPConfig(sessionID: sessionID, servers: servers)
+                    }
+                )
+                notice = languageStore.copy.computerUseNeedNewSession
+                noticeIsError = false
+            } else {
+                _ = try await MothxComputerUse.uninstall(
+                    projectServers: projectServers,
+                    saveServers: { servers in
+                        try await mothx.saveProjectMCPConfig(sessionID: sessionID, servers: servers)
+                    }
+                )
+                notice = nil
+            }
+        } catch {
+            notice = languageStore.copy.computerUseErrorTitle + "：" + describeError(error)
+            noticeIsError = true
+        }
+        await reload()
+    }
+
+    private func describeError(_ error: Error) -> String {
+        if let localized = error as? LocalizedError, let message = localized.errorDescription {
+            return message
+        }
+        return String(describing: error)
+    }
 }
 
 private struct AdvancedSettingsSection: View {

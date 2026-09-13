@@ -209,10 +209,30 @@ struct WorkspaceView: View {
                                     layoutToken: conversationLayoutID,
                                     scrollToBottomToken: scrollToBottomRequest,
                                     sessionToken: conversationSessionToken,
-                                    isLoading: isRestoringConversation
-                                ) { atBottom in
-                                    isConversationAtBottom = atBottom
-                                }
+                                    isLoading: isRestoringConversation,
+                                    onBottomChanged: { atBottom in
+                                        isConversationAtBottom = atBottom
+                                    },
+                                    onSettleFinished: {
+                                        // The AppKit pass has just committed the
+                                        // final document height. Moving the clip
+                                        // view directly, however, does not update
+                                        // SwiftUI's own scroll/visible-rect state:
+                                        // the lazy stack keeps rendering the rows
+                                        // for the *pre-settle* offset, so when a
+                                        // run finishes and the transcript swaps
+                                        // (streaming projection → final Markdown,
+                                        // status row, change card) the viewport can
+                                        // paint blank until a real user scroll
+                                        // refreshes it. Re-assert the bottom
+                                        // through SwiftUI's ScrollViewReader now
+                                        // that the layout is settled, so the rows
+                                        // around the final offset are materialized
+                                        // and SwiftUI's state matches the viewport.
+                                        isConversationAtBottom = true
+                                        scrollToBottom(reader, animated: false)
+                                    }
+                                )
                             )
                         }
                         .coordinateSpace(name: "conversation-scroll")
@@ -503,7 +523,12 @@ struct WorkspaceView: View {
                 // Load order complete: content loaded → collapsed → prepared.
                 // Only now determine the scrollbar position; the premature
                 // requests from the change handlers were suppressed above.
+                // Bump the layout token as well so the observer forces an
+                // AppKit layout pass against the committed document before it
+                // moves the viewport (a token-only scroll can land against the
+                // pre-restore height and leave the viewport blank).
                 isRestoringConversation = false
+                conversationLayoutID += 1
                 requestScrollToBottom()
                 prefetchPreviewCache()
             }
@@ -2028,9 +2053,17 @@ private struct ConversationScrollObserver: NSViewRepresentable {
     /// observer must not chase the bottom or retry against partial content.
     let isLoading: Bool
     let onBottomChanged: (Bool) -> Void
+    /// Called once after the AppKit-level bottom jump has committed its layout
+    /// passes, but only while the viewport still sits at the bottom. The
+    /// representable moves the clip view directly, which bypasses SwiftUI's own
+    /// scroll machinery; the callback lets the owner re-assert the bottom
+    /// through `ScrollViewReader` so SwiftUI's visible-rect state (and therefore
+    /// LazyVStack row realization) matches the viewport instead of leaving the
+    /// conversation blank until the user scrolls.
+    let onSettleFinished: () -> Void
 
     func makeCoordinator() -> Coordinator {
-        Coordinator(onBottomChanged: onBottomChanged)
+        Coordinator(onBottomChanged: onBottomChanged, onSettleFinished: onSettleFinished)
     }
 
     func makeNSView(context: Context) -> NSView {
@@ -2046,6 +2079,7 @@ private struct ConversationScrollObserver: NSViewRepresentable {
 
     func updateNSView(_ nsView: NSView, context: Context) {
         context.coordinator.onBottomChanged = onBottomChanged
+        context.coordinator.onSettleFinished = onSettleFinished
         context.coordinator.layoutToken = layoutToken
         context.coordinator.scrollToBottomToken = scrollToBottomToken
         context.coordinator.sessionToken = sessionToken
@@ -2055,6 +2089,7 @@ private struct ConversationScrollObserver: NSViewRepresentable {
 
     final class Coordinator {
         var onBottomChanged: (Bool) -> Void
+        var onSettleFinished: () -> Void
         var layoutToken = 0
         var appliedLayoutToken: Int?
         var scrollToBottomToken = 0
@@ -2066,6 +2101,12 @@ private struct ConversationScrollObserver: NSViewRepresentable {
         var bottomStateUpdateWorkItem: DispatchWorkItem?
         var bottomStateRevision = 0
         weak var observedScrollView: NSScrollView?
+        /// The representable's own view. Kept so the bottom jump can re-resolve
+        /// the hosting NSScrollView synchronously if the observed one was
+        /// detached while the conversation was momentarily empty (session
+        /// switch). Without this a bottom request can be dropped and the
+        /// restored conversation opens blank until the user scrolls.
+        weak var anchorView: NSView?
         var boundsObserver: NSObjectProtocol?
         var documentFrameObserver: NSObjectProtocol?
         var documentBoundsObserver: NSObjectProtocol?
@@ -2081,11 +2122,13 @@ private struct ConversationScrollObserver: NSViewRepresentable {
         /// (or a new session) invalidates any older in-flight passes.
         var settleGeneration = 0
 
-        init(onBottomChanged: @escaping (Bool) -> Void) {
+        init(onBottomChanged: @escaping (Bool) -> Void, onSettleFinished: @escaping () -> Void) {
             self.onBottomChanged = onBottomChanged
+            self.onSettleFinished = onSettleFinished
         }
 
         func attach(to view: NSView) {
+            anchorView = view
             DispatchQueue.main.async { [weak self, weak view] in
                 guard let self, let view,
                       let scrollView = Self.findScrollView(from: view) else { return }
@@ -2151,10 +2194,16 @@ private struct ConversationScrollObserver: NSViewRepresentable {
             lastScrollToBottomDocumentHeight = 0
             settleGeneration &+= 1
             lastBottomState = nil
-            // Adopt the current scroll token. The next bottom request must come
-            // from the completed restore (it increments the token), never from
-            // a stale one that is already applied.
-            appliedScrollToBottomToken = scrollToBottomToken
+            // Adopt the current scroll token only when the conversation is not
+            // mid-restore. A restore bumps the token exactly once, at the end,
+            // after its content is committed; adopting (and thereby consuming)
+            // that token here while `isLoading` is still true would swallow the
+            // single positioning request and leave the restored conversation
+            // blank until the user scrolls. While loading, the token is left
+            // pending so the post-restore request still fires.
+            if !isLoading {
+                appliedScrollToBottomToken = scrollToBottomToken
+            }
             scrollView.needsLayout = true
             scrollView.layoutSubtreeIfNeeded()
             let clipView = scrollView.contentView
@@ -2207,7 +2256,7 @@ private struct ConversationScrollObserver: NSViewRepresentable {
             guard !isLoading else { return }
             guard let lastTime = lastScrollToBottomTime,
                   Date().timeIntervalSince(lastTime) < 4.0,
-                  let scrollView = observedScrollView,
+                  let scrollView = resolvedScrollView(),
                   let documentView = scrollView.documentView else { return }
             let documentHeight = documentView.bounds.height
             guard documentHeight > lastScrollToBottomDocumentHeight + 10 else { return }
@@ -2223,7 +2272,7 @@ private struct ConversationScrollObserver: NSViewRepresentable {
         }
 
         func refreshLayoutIfNeeded() {
-            guard let scrollView = observedScrollView,
+            guard let scrollView = resolvedScrollView(),
                   appliedLayoutToken != layoutToken else { return }
             appliedLayoutToken = layoutToken
             scrollView.needsLayout = true
@@ -2246,14 +2295,34 @@ private struct ConversationScrollObserver: NSViewRepresentable {
             appliedScrollToBottomToken = scrollToBottomToken
             DispatchQueue.main.async { [weak self] in
                 guard let self else { return }
+                // Make sure the request targets the currently installed scroll
+                // view: during a session switch the document can be rebuilt
+                // while it was empty, leaving our cached reference detached.
+                self.resolvedScrollView()
                 self.scrollToBottomNow()
                 // Landing at the estimated document bottom can leave freshly
                 // realized rows undrawn until something forces another layout
                 // pass, and no AppKit notification arrives when the estimate
                 // was already correct. Settle the viewport over a few frames so
                 // restored content is actually rendered.
-                self.settleAfterScroll(remaining: 8)
+                self.settleAfterScroll(remaining: 20)
             }
+        }
+
+        /// Returns the installed scroll view, re-resolving it from the anchor
+        /// view when the previously observed one is gone or no longer in the
+        /// window hierarchy.
+        @discardableResult
+        func resolvedScrollView() -> NSScrollView? {
+            if let scrollView = observedScrollView, scrollView.window != nil {
+                return scrollView
+            }
+            guard let anchorView, let scrollView = Self.findScrollView(from: anchorView) else {
+                return observedScrollView
+            }
+            observedScrollView = scrollView
+            scrollView.contentView.postsBoundsChangedNotifications = true
+            return scrollView
         }
 
         /// Runs a few deferred layout/display passes after a bottom jump.
@@ -2264,25 +2333,55 @@ private struct ConversationScrollObserver: NSViewRepresentable {
         func settleAfterScroll(remaining: Int) {
             settleGeneration &+= 1
             let generation = settleGeneration
-            scheduleSettleStep(remaining: remaining, generation: generation)
+            scheduleSettleStep(remaining: remaining, generation: generation, previousHeight: -1)
         }
 
-        private func scheduleSettleStep(remaining: Int, generation: Int) {
-            guard remaining > 0 else { return }
+        private func scheduleSettleStep(remaining: Int, generation: Int, previousHeight: CGFloat) {
+            guard remaining > 0 else {
+                // The jump has committed its layout passes. Hand control back to
+                // SwiftUI only when the viewport is still at the bottom, so the
+                // owner can refresh SwiftUI's own scroll state without yanking a
+                // user who scrolled away during the settle. Deferred one more
+                // main-queue turn so the callback never runs inside the layout /
+                // display pass that just finished, and generation-checked so a
+                // newer settle (or session reset) supersedes this one.
+                if distanceToBottom() <= 50 {
+                    DispatchQueue.main.async { [weak self] in
+                        guard let self, self.settleGeneration == generation else { return }
+                        self.onSettleFinished()
+                    }
+                }
+                return
+            }
             DispatchQueue.main.async { [weak self] in
                 guard let self, self.settleGeneration == generation,
-                      let scrollView = self.observedScrollView,
+                      let scrollView = self.resolvedScrollView(),
                       let documentView = scrollView.documentView else { return }
                 scrollView.needsLayout = true
                 scrollView.layoutSubtreeIfNeeded()
+                let height = documentView.bounds.height
+                // Force both the document and the clip view to redraw. The clip
+                // view owns the visible region, so marking only the document
+                // leaves the freshly scrolled area unpainted until a user
+                // scroll nudges AppKit into drawing it.
                 documentView.needsDisplay = true
                 documentView.displayIfNeeded()
-                // Keep following the bottom while settling, but stop if the
-                // user has dragged away from it (same rule as the retry path).
-                if self.distanceToBottom() <= 50 || self.lastBottomState == true {
+                scrollView.contentView.needsDisplay = true
+                scrollView.contentView.displayIfNeeded()
+                let growing = previousHeight >= 0 && abs(height - previousHeight) > 0.5
+                let atBottom = self.distanceToBottom() <= 50
+                if previousHeight < 0 || atBottom || growing {
+                    // Keep following the bottom while the restored content is
+                    // still realizing (markdown, images, per-file history),
+                    // but stop once it has settled away from the bottom (the
+                    // user scrolled, or the estimate was already correct).
                     self.scrollToBottomNow()
+                } else {
+                    // The user scrolled away from the bottom mid-settle: stop
+                    // chasing and do not re-assert the bottom through SwiftUI.
+                    return
                 }
-                self.scheduleSettleStep(remaining: remaining - 1, generation: generation)
+                self.scheduleSettleStep(remaining: remaining - 1, generation: generation, previousHeight: height)
             }
         }
 
@@ -2303,7 +2402,7 @@ private struct ConversationScrollObserver: NSViewRepresentable {
         }
 
         func clampScrollOffsetIfNeeded() {
-            guard let scrollView = observedScrollView,
+            guard let scrollView = resolvedScrollView(),
                   let documentView = scrollView.documentView else { return }
             scrollView.needsLayout = true
             scrollView.layoutSubtreeIfNeeded()
@@ -2321,7 +2420,7 @@ private struct ConversationScrollObserver: NSViewRepresentable {
         }
 
         func scrollToBottomNow() {
-            guard let scrollView = observedScrollView,
+            guard let scrollView = resolvedScrollView(),
                   let documentView = scrollView.documentView else { return }
             scrollView.needsLayout = true
             scrollView.layoutSubtreeIfNeeded()
@@ -2348,6 +2447,8 @@ private struct ConversationScrollObserver: NSViewRepresentable {
                 scrollView.layoutSubtreeIfNeeded()
                 documentView.needsDisplay = true
                 documentView.displayIfNeeded()
+                clipView.needsDisplay = true
+                clipView.displayIfNeeded()
             }
             // Re-evaluate even when the clip view was already at maxY. This
             // fixes the stale-button case where a prior bounds notification
@@ -2361,7 +2462,7 @@ private struct ConversationScrollObserver: NSViewRepresentable {
         }
 
         func distanceToBottom() -> CGFloat {
-            guard let scrollView = observedScrollView,
+            guard let scrollView = resolvedScrollView(),
                   let documentView = scrollView.documentView else { return .greatestFiniteMagnitude }
             // Convert the clip view bounds into document coordinates rather
             // than comparing the two views' bounds directly. This works for
