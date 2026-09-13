@@ -176,6 +176,29 @@ struct WorkspaceView: View {
                                     )
                                 }
 
+                                // Reading an older turn: the way back to the
+                                // newest one sits directly under the turn that
+                                // is being read, centered.
+                                if !isViewingLatestTurn {
+                                    Button {
+                                        if let latest = currentTurns.last { selectTurn(latest) }
+                                    } label: {
+                                        Label(c.backToLatestTurn, systemImage: "arrow.down.to.line")
+                                            .font(.caption.weight(.medium))
+                                            .padding(.horizontal, 10)
+                                            .padding(.vertical, 6)
+                                            .contentShape(Capsule())
+                                    }
+                                    .buttonStyle(.plain)
+                                    .foregroundStyle(.secondary)
+                                    .background(.regularMaterial, in: Capsule())
+                                    .overlay(Capsule().stroke(Color.primary.opacity(0.12), lineWidth: 1))
+                                    .shadow(color: .black.opacity(0.12), radius: 5, y: 2)
+                                    .padding(.top, 12)
+                                    .frame(maxWidth: .infinity, alignment: .center)
+                                    .help(c.backToLatestTurn)
+                                }
+
                                 // A session can briefly have no turn while its
                                 // first user message is being attached. Keep
                                 // the same inline status presentation here.
@@ -325,29 +348,6 @@ struct WorkspaceView: View {
                                 .padding(.top, 10)
                                 .padding(.trailing, 18)
                                 .help(c.turnHistoryHelp)
-                            }
-                        }
-                        .overlay(alignment: .topLeading) {
-                            // Reading an older turn: one click returns to the
-                            // newest one (and re-enters the live stream).
-                            if !isViewingLatestTurn {
-                                Button {
-                                    if let latest = currentTurns.last { selectTurn(latest) }
-                                } label: {
-                                    Label(c.backToLatestTurn, systemImage: "arrow.down.to.line")
-                                        .font(.caption.weight(.medium))
-                                        .padding(.horizontal, 10)
-                                        .padding(.vertical, 6)
-                                        .contentShape(Capsule())
-                                }
-                                .buttonStyle(.plain)
-                                .foregroundStyle(.secondary)
-                                .background(.regularMaterial, in: Capsule())
-                                .overlay(Capsule().stroke(Color.primary.opacity(0.12), lineWidth: 1))
-                                .shadow(color: .black.opacity(0.12), radius: 5, y: 2)
-                                .padding(.top, 10)
-                                .padding(.leading, 18)
-                                .help(c.backToLatestTurn)
                             }
                         }
                         .overlay(alignment: .bottom) {
