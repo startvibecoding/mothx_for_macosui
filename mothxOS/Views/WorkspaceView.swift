@@ -36,7 +36,6 @@ struct WorkspaceView: View {
     @State private var preparedTurnIDs: Set<String> = []
     @State private var preparingTurnID: String?
     @State private var showAllHistory = false
-    @State private var isConversationAtBottom = true
     @State private var forkingMessageID: String?
     @State private var forkErrorMessage: String?
     @State private var reviewedChanges: MothxTurnChanges?
@@ -212,32 +211,24 @@ struct WorkspaceView: View {
                                     scrollToBottomToken: scrollToBottomRequest,
                                     sessionToken: conversationSessionToken,
                                     isLoading: isRestoringConversation,
-                                    onBottomChanged: { atBottom in
-                                        isConversationAtBottom = atBottom
-                                    },
+                                    onBottomChanged: { _ in },
                                     onSettleFinished: {
-                                        // The AppKit pass has just committed the
-                                        // final document height. Moving the clip
-                                        // view directly, however, does not update
-                                        // SwiftUI's own scroll/visible-rect state:
-                                        // the lazy stack keeps rendering the rows
-                                        // for the *pre-settle* offset, so when a
-                                        // run finishes and the transcript swaps
-                                        // (streaming projection → final Markdown,
-                                        // status row, change card) the viewport can
-                                        // paint blank until a real user scroll
-                                        // refreshes it. Re-assert the bottom
-                                        // through SwiftUI's ScrollViewReader now
-                                        // that the layout is settled, so the rows
-                                        // around the final offset are materialized
-                                        // and SwiftUI's state matches the viewport.
-                                        isConversationAtBottom = true
+                                        // The observer moved the clip view; ask
+                                        // SwiftUI for the bottom as well so its
+                                        // visible rectangle agrees. P3 makes this
+                                        // SwiftUI-first and P4 removes the
+                                        // observer entirely.
                                         scrollToBottom(reader, animated: false)
                                     }
                                 )
                             )
                         }
                         .coordinateSpace(name: "conversation-scroll")
+                        // Bottom detection belongs to SwiftUI now:
+                        // `onScrollGeometryChange` (+ phase) on macOS 15, a
+                        // read-only AppKit probe on macOS 14. The observer above
+                        // no longer owns this state.
+                        .conversationScrollObservation(scrollModel)
                         // Legacy executor (P1): the scroll model owns *when* to
                         // move the viewport, this maps the request onto the
                         // existing AppKit observers so behaviour is unchanged
@@ -257,12 +248,6 @@ struct WorkspaceView: View {
                             case .restored, .runTerminal:
                                 requestScrollToBottom()
                             }
-                        }
-                        // The model mirrors the observer's bottom state so the
-                        // button and the follow policy never disagree (P2 moves
-                        // this reporting into SwiftUI's own scroll geometry).
-                        .onChange(of: isConversationAtBottom) { _, atBottom in
-                            scrollModel.reportAtBottom(atBottom)
                         }
                         .onChange(of: mothx.messagesBySession[sessionID] ?? []) { _, _ in
                             // While a saved conversation is being restored, the
@@ -361,7 +346,7 @@ struct WorkspaceView: View {
                             }
                         }
                         .overlay(alignment: .bottom) {
-                            if !isConversationAtBottom {
+                            if !scrollModel.atBottom {
                                 ConversationScrollButton(isRunning: mothx.runSessionID == sessionID && mothx.isRunning) {
                                     // Ask the model first so the intent is
                                     // recorded even if the observer's landing
@@ -725,18 +710,18 @@ struct WorkspaceView: View {
             }
             guard let sessionID,
                   let changes = mothx.latestChangesBySession[sessionID] else {
-                conversationWasAtBottomBeforeReview = isConversationAtBottom
+                conversationWasAtBottomBeforeReview = scrollModel.followBottom
                 showEmptyPreviewSidebar = true
                 return
             }
-            conversationWasAtBottomBeforeReview = isConversationAtBottom
+            conversationWasAtBottomBeforeReview = scrollModel.followBottom
             reviewedChanges = changes
         }
     }
 
     private func presentReview(_ changes: MothxTurnChanges) {
         withAnimation(.easeInOut(duration: 0.22)) {
-            conversationWasAtBottomBeforeReview = isConversationAtBottom
+            conversationWasAtBottomBeforeReview = scrollModel.followBottom
             showEmptyPreviewSidebar = false
             previewedSkill = nil
             previewedTool = nil
@@ -786,7 +771,7 @@ struct WorkspaceView: View {
 
     private func presentSkillPreview(_ skill: MothxSkill) {
         withAnimation(.easeInOut(duration: 0.22)) {
-            conversationWasAtBottomBeforeReview = isConversationAtBottom
+            conversationWasAtBottomBeforeReview = scrollModel.followBottom
             showEmptyPreviewSidebar = false
             previewedSkill = skill
             previewedTool = nil
@@ -799,7 +784,7 @@ struct WorkspaceView: View {
 
     private func presentToolPreview(_ item: ToolInvocationSummary) {
         withAnimation(.easeInOut(duration: 0.22)) {
-            conversationWasAtBottomBeforeReview = isConversationAtBottom
+            conversationWasAtBottomBeforeReview = scrollModel.followBottom
             showEmptyPreviewSidebar = false
             previewedTool = item
             previewedSkill = nil
@@ -812,7 +797,7 @@ struct WorkspaceView: View {
 
     private func presentImagePreview(_ image: MothxImagePreview) {
         withAnimation(.easeInOut(duration: 0.22)) {
-            conversationWasAtBottomBeforeReview = isConversationAtBottom
+            conversationWasAtBottomBeforeReview = scrollModel.followBottom
             showEmptyPreviewSidebar = false
             previewedImage = image
             previewedVideo = nil
@@ -825,7 +810,7 @@ struct WorkspaceView: View {
 
     private func presentVideoPreview(_ video: MothxVideoPreview) {
         withAnimation(.easeInOut(duration: 0.22)) {
-            conversationWasAtBottomBeforeReview = isConversationAtBottom
+            conversationWasAtBottomBeforeReview = scrollModel.followBottom
             showEmptyPreviewSidebar = false
             previewedVideo = video
             previewedImage = nil
@@ -838,7 +823,7 @@ struct WorkspaceView: View {
 
     private func presentDocumentPreview(_ document: MothxDocumentPreview) {
         withAnimation(.easeInOut(duration: 0.22)) {
-            conversationWasAtBottomBeforeReview = isConversationAtBottom
+            conversationWasAtBottomBeforeReview = scrollModel.followBottom
             showEmptyPreviewSidebar = false
             previewedDocument = document
             previewedImage = nil

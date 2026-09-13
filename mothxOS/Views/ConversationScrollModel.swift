@@ -1,5 +1,7 @@
+import AppKit
 import Combine
 import Foundation
+import SwiftUI
 
 /// A single, coalesced request to position the conversation viewport.
 ///
@@ -154,5 +156,166 @@ final class ConversationScrollModel: ObservableObject {
             "scroll",
             "request reason=\(reason.rawValue) revision=\(request.revision) animated=\(animated) followBottom=\(followBottom) atBottom=\(atBottom)"
         )
+    }
+}
+
+// MARK: - macOS 14 geometry probe
+
+/// Reports the conversation's scroll geometry on macOS 14, where
+/// `onScrollGeometryChange` (macOS 15+) is unavailable.
+///
+/// It is strictly **read-only**: it never moves the clip view, so SwiftUI keeps
+/// full ownership of the viewport. Positioning always goes through
+/// `ScrollViewReader.scrollTo`.
+struct ConversationVisibilityObserver: NSViewRepresentable {
+    /// contentHeight, clip origin y, clip height — in the hosting document's
+    /// (flipped) coordinate space.
+    let onGeometry: (CGFloat, CGFloat, CGFloat) -> Void
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator(onGeometry: onGeometry)
+    }
+
+    func makeNSView(context: Context) -> NSView {
+        let view = NSView(frame: .zero)
+        view.postsFrameChangedNotifications = false
+        context.coordinator.onGeometry = onGeometry
+        context.coordinator.attach(to: view)
+        return view
+    }
+
+    func updateNSView(_ nsView: NSView, context: Context) {
+        context.coordinator.onGeometry = onGeometry
+        context.coordinator.attach(to: nsView)
+    }
+
+    final class Coordinator {
+        var onGeometry: (CGFloat, CGFloat, CGFloat) -> Void
+        weak var anchorView: NSView?
+        weak var observedScrollView: NSScrollView?
+        weak var observedDocumentView: NSView?
+        var boundsObserver: NSObjectProtocol?
+        var documentFrameObserver: NSObjectProtocol?
+        /// Bounds/frame notifications arrive far faster than SwiftUI can use
+        /// them; publish at most once per main-queue turn.
+        private var reportScheduled = false
+
+        init(onGeometry: @escaping (CGFloat, CGFloat, CGFloat) -> Void) {
+            self.onGeometry = onGeometry
+        }
+
+        func attach(to view: NSView) {
+            anchorView = view
+            DispatchQueue.main.async { [weak self, weak view] in
+                guard let self, let view,
+                      let scrollView = Self.findScrollView(from: view) else { return }
+                self.observe(scrollView)
+                self.report()
+            }
+        }
+
+        private func observe(_ scrollView: NSScrollView) {
+            let documentView = scrollView.documentView
+            guard observedScrollView !== scrollView || observedDocumentView !== documentView else { return }
+            detachObservers()
+            observedScrollView = scrollView
+            observedDocumentView = documentView
+            scrollView.contentView.postsBoundsChangedNotifications = true
+            boundsObserver = NotificationCenter.default.addObserver(
+                forName: NSView.boundsDidChangeNotification,
+                object: scrollView.contentView,
+                queue: .main
+            ) { [weak self] _ in
+                self?.scheduleReport()
+            }
+            if let documentView {
+                documentView.postsFrameChangedNotifications = true
+                documentFrameObserver = NotificationCenter.default.addObserver(
+                    forName: NSView.frameDidChangeNotification,
+                    object: documentView,
+                    queue: .main
+                ) { [weak self] _ in
+                    self?.scheduleReport()
+                }
+            }
+        }
+
+        private func scheduleReport() {
+            guard !reportScheduled else { return }
+            reportScheduled = true
+            DispatchQueue.main.async { [weak self] in
+                guard let self else { return }
+                self.reportScheduled = false
+                self.report()
+            }
+        }
+
+        private func report() {
+            guard let scrollView = observedScrollView,
+                  let documentView = scrollView.documentView else { return }
+            onGeometry(
+                documentView.bounds.height,
+                scrollView.contentView.bounds.origin.y,
+                scrollView.contentView.bounds.height
+            )
+        }
+
+        private func detachObservers() {
+            if let boundsObserver { NotificationCenter.default.removeObserver(boundsObserver) }
+            if let documentFrameObserver { NotificationCenter.default.removeObserver(documentFrameObserver) }
+            boundsObserver = nil
+            documentFrameObserver = nil
+        }
+
+        static func findScrollView(from view: NSView) -> NSScrollView? {
+            var current: NSView? = view
+            while let candidate = current {
+                if let scrollView = candidate as? NSScrollView { return scrollView }
+                current = candidate.superview
+            }
+            return nil
+        }
+
+        deinit {
+            detachObservers()
+        }
+    }
+}
+
+// MARK: - Observation modifiers
+
+extension View {
+    /// Feeds conversation scroll geometry into the model.
+    ///
+    /// macOS 15+ uses SwiftUI's own reporting: the transform publishes a `Bool`
+    /// so the action runs only when the “at the bottom” state crosses the
+    /// threshold, and the scroll phase tells a user drag apart from our own
+    /// programmatic moves. macOS 14 falls back to a read-only AppKit probe.
+    @ViewBuilder
+    func conversationScrollObservation(_ model: ConversationScrollModel) -> some View {
+        if #available(macOS 15.0, *) {
+            self
+                .onScrollGeometryChange(for: Bool.self) { geometry in
+                    geometry.contentSize.height - geometry.contentOffset.y - geometry.containerSize.height
+                        <= ConversationScrollModel.bottomThreshold
+                } action: { _, atBottom in
+                    model.reportAtBottom(atBottom)
+                }
+                .onScrollPhaseChange { _, phase in
+                    model.reportUserScrolling(
+                        phase == .interacting || phase == .decelerating || phase == .tracking
+                    )
+                }
+        } else {
+            background(
+                ConversationVisibilityObserver { contentHeight, offsetY, viewportHeight in
+                    model.reportGeometry(
+                        contentHeight: contentHeight,
+                        offsetY: offsetY,
+                        viewportHeight: viewportHeight
+                    )
+                }
+            )
+        }
     }
 }
