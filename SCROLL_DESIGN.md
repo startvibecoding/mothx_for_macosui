@@ -1,6 +1,6 @@
 # 对话滚动机制设计（SCROLL_DESIGN）
 
-状态：已确认，按 P0→P5 分阶段落地。
+状态：已落地（P0 → P4.1，见第 7 节）。
 适用范围：`mothxOS/Views/WorkspaceView.swift` 的会话区（不含 `TeamWorkspaceView` 的简单滚动）。
 
 ## 1. 要解决的问题
@@ -82,3 +82,19 @@ ScrollView {
 - `defaultScrollAnchor(_:for: .sizeChanges)` 在“用户上滑阅读时内容仍在增长”的语义需实测；若不理想，退化为“仅在 `followBottom` 时显式 `scrollTo`”（当前实现同时保留该显式跟随路径）。
 - `onScrollGeometryChange` 的 `contentSize` 在 `LazyVStack` 下可能含未实例化行的估算：改用哨兵 anchor 对齐，不做高度算术。
 - 本机无法截图/自动化验证（终端缺少屏幕录制与辅助功能权限），需人工复现第 6.1 节四条。
+
+## 7. 落地记录
+
+| 阶段 | 提交 | 内容 |
+| --- | --- | --- |
+| 设计 | `5400d85` | 新增本文档 |
+| P0 | `a5f77bb` | `[scroll]` 诊断日志（仅元数据） |
+| P1 | `74cf656` | 引入 `ConversationScrollModel`，8 处触发收敛为单一 intent（执行仍走旧观察者） |
+| P2 | `616b684` | 底部检测改用 `onScrollGeometryChange`（15+）/只读探针（14），删除 `isConversationAtBottom` |
+| P3 | `533b39e` | 定位收敛为单条 `ScrollViewReader.scrollTo`，删除 `ConversationScrollObserver`（470 行）与三个 token |
+| P4 | `5f65a81` | `defaultScrollAnchor` 锚定首帧/变长，删除提交 250ms 补滚 |
+| P4.1 | `7bd565a` | 首个 `scrollTo` 放到无挂起点的同步前缀，避免流式突发把跟随滚动饿死 |
+
+最终形态：`WorkspaceView` 净减 ~540 行；`ConversationScrollObserver`、`settleAfterScroll`、`retryScrollToBottomIfNeeded`、`clampScrollOffsetIfNeeded`、`scrollToBottomNow`、`applySessionResetIfNeeded`、`conversationLayoutID`、`scrollToBottomRequest`、`conversationSessionToken`、`isConversationAtBottom` 全部不存在。
+
+待人工验证（第 6.1 节）：Run 结束不空白、切会话不空白、流式上滑不被拽回、长会话恢复无空白帧。

@@ -246,9 +246,9 @@ struct WorkspaceView: View {
                         .onChange(of: mothx.isRunning) { wasRunning, isRunning in
                             guard mothx.runSessionID == sessionID, wasRunning, !isRunning else { return }
                             // The final transcript can be shorter than the
-                            // streaming projection. Re-anchor after the terminal
-                            // layout has committed so the old clip origin cannot
-                            // leave a blank viewport.
+                            // streaming projection. Re-pin after the terminal
+                            // layout commits so the swapped-in content is not
+                            // left off-screen.
                             logScroll("runIdle", "turns=\(currentTurns.count)")
                             scrollModel.requireJump(.runTerminal)
                         }
