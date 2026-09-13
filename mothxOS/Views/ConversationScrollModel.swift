@@ -88,12 +88,19 @@ final class ConversationScrollModel: ObservableObject {
         settleBudget = Self.settleReanchorLimit
     }
 
-    /// The restore committed its content; positioning may resume. The caller
-    /// issues the single post-restore jump right after this.
-    func endConversationReset() {
+    /// The restore committed its content: open it at the top of its newest turn
+    /// and stop tracking the bottom.
+    ///
+    /// Every entry into a turn reads from its beginning (a new round, a
+    /// historical turn, “back to the latest turn”, and a restored conversation),
+    /// so this is deliberately *not* gated by the follow intent — a restore has
+    /// no user intent yet — and it does not enable following. The user re-enters
+    /// follow mode with the round button or by scrolling to the bottom.
+    func openRestoredConversationAtTop() {
         isSuppressed = false
-        followBottom = true
+        followBottom = false
         contentHeight = 0
+        enqueue(.restored, anchor: .top, animated: false)
     }
 
     // MARK: - Geometry inputs
@@ -411,22 +418,21 @@ extension View {
 }
 
 extension View {
-    /// Anchors the conversation to its bottom.
+    /// Anchors the conversation's first paint to the **top** — a turn is always
+    /// read from its beginning (see `openRestoredConversationAtTop`).
     ///
-    /// `initialOffset` makes the first paint land at the bottom, so a restored
-    /// or switched conversation never opens off-screen. On macOS 15+
-    /// `pinOnSizeChanges` additionally keeps the bottom pinned while streamed
-    /// content grows; it must be **off** while a historical turn is displayed,
-    /// otherwise the size change caused by its body committing would yank the
-    /// viewport to that turn's end instead of letting it be read from the top.
+    /// On macOS 15+, `pinOnSizeChanges` additionally keeps the **bottom** pinned
+    /// while streamed content grows. It must be off unless the user is actually
+    /// following the live conversation, otherwise growth would yank the viewport
+    /// away from the top the user is reading.
     @ViewBuilder
-    func conversationBottomAnchoring(pinOnSizeChanges: Bool) -> some View {
+    func conversationScrollAnchoring(pinOnSizeChanges: Bool) -> some View {
         if #available(macOS 15.0, *) {
             self
-                .defaultScrollAnchor(.bottom, for: .initialOffset)
+                .defaultScrollAnchor(.top, for: .initialOffset)
                 .defaultScrollAnchor(pinOnSizeChanges ? .bottom : nil, for: .sizeChanges)
         } else {
-            defaultScrollAnchor(.bottom)
+            defaultScrollAnchor(.top)
         }
     }
 }

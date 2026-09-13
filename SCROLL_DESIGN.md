@@ -27,7 +27,7 @@
 
 - `atBottom: Bool`：几何派生，驱动“回到底部”按钮。
 - `followBottom: Bool`：用户意图。只在**用户**（滚动相位，macOS 14 用“内容高度不变却偏离底部”的读数）改变视口时改写；**布局产生的读数不得改动它**，否则“新一轮从顶部开始”会被一次“内容还短、读数恰好在底部”悄悄取消。用户回到/要求底部（滚到底部、点底部圆钮）时置回 true。
-- 新一轮对话（`startNewTurnFromTop`，reason `newTurn`）：定位到该轮**顶部**、`followBottom=false`，运行中的流式不再自动跟随；用户点底部圆钮或自己滚到底部才恢复跟随。选择历史轮次同理（reason `turnSelected`）。
+- 新一轮对话（`startNewTurnFromTop`，reason `newTurn`）、选择历史轮次（reason `turnSelected`）、点“回到最新轮次”、恢复/切会话（`openRestoredConversationAtTop`，reason `restored`）：一律定位到该轮**顶部**、`followBottom=false`，运行中的流式不自动跟随；用户点底部圆钮或自己滚到底部才恢复跟随。
 - `request: ConversationScrollRequest`（`revision` + `reason` + `animated`）：合并后的定位请求。
 - `isSuppressed`：恢复会话期间为 true，几何与内容增长都不得改变 `followBottom`，也不得发出请求。
 
@@ -39,13 +39,13 @@
 ScrollView {
     LazyVStack { …; Color.clear.frame(height: 1).id(conversationBottomID) }
 }
-.conversationBottomAnchoring()            // 首帧锚定底部；15+ 在内容变长时保持锚定
+.conversationScrollAnchoring(pin)         // 首帧锚定顶部；跟随态下 15+ 才钉底部
 .conversationScrollObservation(model)     // 15+ 几何/滚动相位；14 只读探针
 .task(id: model.request.revision) { … }   // 唯一定位执行点
 ```
 
 - **每个会话一个全新 ScrollView**：`.id(conversationIdentity)`，在恢复开始的那一次更新里与清空轮次同时生效。复用同一个 ScrollView 时，上一个会话深达数千点的 clip origin 会在内容被替换后存活，新会话渲染在无效偏移处 → 空白（BUG-0014 的复发，见 `BUGFIXES.md` 第 2 节）。身份重置同时让 `.initialOffset` 对新会话重新生效。
-- **首帧**：`.defaultScrollAnchor(.bottom, for: .initialOffset)`（15+）/ `.defaultScrollAnchor(.bottom)`（14）——恢复/切会话天然落在底部。
+- **首帧 = 顶部**：`.defaultScrollAnchor(.top, for: .initialOffset)`（15+）/ `.defaultScrollAnchor(.top)`（14）。**任何进入某一轮的动作都从该轮开头读**：新一轮（`newTurn`）、历史轮次（`turnSelected`）、回到最新轮次、以及恢复/切会话（`restored`，见 `openRestoredConversationAtTop()`，它不经 `followBottom` 门、也不开启跟随）。
 - **增长跟随**：`.defaultScrollAnchor(.bottom, for: .sizeChanges)`（15+），但只在**跟随态**（`isViewingLatestTurn && followBottom`）打开——否则流式增长会把“从顶部开始阅读”的位置拽到底部。
 - **探测**：`onScrollGeometryChange`（15+，变换成 `Bool` 减少刷新）+ `onScrollPhaseChange`（15+，判定用户滚动）；macOS 14 用只读 `ConversationVisibilityObserver` 上报 `(contentHeight, offsetY, viewportHeight)`，并按“内容高度未变却偏离底部 = 用户滚动”的启发式判定。
 - **定位**：只保留一条 `ScrollViewReader.scrollTo(锚点, anchor:)`（锚点 = `conversationTopID` / `conversationBottomID`），由 `.task(id:)` 驱动（同帧多次请求自动合并）；`.task` 在 `isSuppressed`（恢复中）直接返回，避免早于本次恢复的旧请求给新会话定位。
@@ -66,7 +66,7 @@ ScrollView {
 
 ## 5. 与 BUG 登记表的对应（回归面）
 
-- BUG-0005 / 0014（恢复空白）：`.initialOffset` 锚点让首帧天然在底部，**不存在“token 被提前消费”这一失败模式**，是从根上消除而非再打补丁。
+- BUG-0005 / 0014（恢复空白）：`.initialOffset` 锚点让首帧天然落在确定位置（现为**顶部**，等于文档起点、无估算），**不存在“token 被提前消费”这一失败模式**，是从根上消除而非再打补丁。
 - BUG-0016（Run 结束空白）：单一 owner 后不再可能出现“SwiftUI 可见矩形失同步”。
 - BUG-0004（流式空白）：只动滚动层，不碰 `mergedLiveMessages`。
 - 用户上滑不被拽回：三处分散判断收敛为 `followBottom == false` 一个门；`isSuppressed` 期间不发请求。
@@ -76,7 +76,7 @@ ScrollView {
 验收：
 
 1. Run 连续 3 次结束，末条内容完整可见，无需手动滚屏、无可感知跳动。
-2. 连续 10 次快速切会话，首帧即显示内容且停在底部。
+2. 连续 10 次快速切会话，首帧即显示内容且停在**最新轮次顶部**。
 3. 流式中用户上滑后视口不动、按钮出现且可回到底部。
 4. 长会话（>200 条消息）恢复后无空白帧。
 
@@ -100,6 +100,7 @@ ScrollView {
 | 复发修复 | 见提交 | 切会话空白复发：`conversationIdentity` 给每个会话全新 ScrollView + 恢复结束定位（BUGFIXES 第 2 节） |
 | 定稿方式 | 见提交 | 最终滚动位置改由**内容实际布局高度**驱动：`conversationContentHeight` 上报 `LazyVStack` 布局高度，高度稳定即完成；删除按帧数重复定位 |
 | 新一轮置顶 | 见提交 | 新一轮对话定位到该轮顶部（`startNewTurnFromTop`）；跟随意图不再被布局读数改写，`.sizeChanges` 锚点仅在跟随态开启 |
+| 统一置顶 | 见提交 | 历史轮次、回到最新轮次、恢复/切会话统一定位到该轮顶部（`openRestoredConversationAtTop`）；`.initialOffset` 改为 `.top` |
 
 最终形态：`WorkspaceView` 净减 ~540 行；`ConversationScrollObserver`、`settleAfterScroll`、`retryScrollToBottomIfNeeded`、`clampScrollOffsetIfNeeded`、`scrollToBottomNow`、`applySessionResetIfNeeded`、`conversationLayoutID`、`scrollToBottomRequest`、`conversationSessionToken`、`isConversationAtBottom` 全部不存在。
 

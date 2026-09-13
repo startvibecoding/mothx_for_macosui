@@ -222,14 +222,12 @@ struct WorkspaceView: View {
                     // to the fresh view and opens it at the bottom).
                     .id(conversationIdentity)
                     .coordinateSpace(name: "conversation-scroll")
-                    // Anchor the first paint (and, while the newest turn is
-                    // displayed, every content-size change) to the bottom, so
-                    // a restored or switched conversation opens at the bottom
-                    // and a streaming reply stays pinned without any settle
-                    // loop. Reading a historical turn clears the size-change
-                    // anchor so its body committing cannot yank the viewport
-                    // to that turn's end.
-                    .conversationBottomAnchoring(
+                    // A turn is always read from its beginning, so the first
+                    // paint is anchored to the top. Only while the user is
+                    // following the live conversation does a content-size change
+                    // keep the bottom pinned, which is what lets a streaming
+                    // reply stay put without any settle loop.
+                    .conversationScrollAnchoring(
                         pinOnSizeChanges: isViewingLatestTurn && scrollModel.followBottom
                     )
                     // Bottom detection and positioning both belong to
@@ -539,14 +537,11 @@ struct WorkspaceView: View {
                 // pre-restore height and leave the viewport blank).
                 isRestoringConversation = false
                 logScroll("restoreEnd", "turns=\(currentTurns.count)")
-                scrollModel.endConversationReset()
-                // The restored conversation is scrolled to its bottom once the
-                // content is committed; from there the model keeps re-anchoring
-                // on every content-height change (turn body → Markdown → preview
-                // strips → change cards → artifact images) and stops only when
-                // the height is stable. The final position therefore comes from
-                // the real laid-out height, not from a frame count.
-                scrollModel.requireJump(.restored, force: true)
+                // A restored conversation opens at the top of its newest turn,
+                // exactly like every other entry into a turn. Nothing follows the
+                // bottom afterwards, so the position holds while the body,
+                // Markdown, preview strips and change cards lay out below it.
+                scrollModel.openRestoredConversationAtTop()
                 prefetchPreviewCache()
             }
         }
