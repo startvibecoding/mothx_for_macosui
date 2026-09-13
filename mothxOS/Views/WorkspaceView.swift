@@ -10,7 +10,6 @@ private enum ImageGenerationSelection: Hashable {
 struct WorkspaceView: View {
     @EnvironmentObject private var mothx: MothxServiceManager
     @EnvironmentObject private var languageStore: LanguageStore
-    @EnvironmentObject private var terminalStore: TerminalSessionStore
     @Binding var prompt: String
     let sessionID: String?
     /// Displays the conversation without exposing run controls or the prompt
@@ -107,343 +106,306 @@ struct WorkspaceView: View {
             let rightSidebarColumnWidth = rightSidebarWidth + 1 // + 1px separator
             ZStack(alignment: .trailing) {
         VStack(spacing: 0) {
-            if terminalStore.isOpen {
-                TUIPanelHeader(store: terminalStore)
-                Divider()
-                TerminalPanelView(store: terminalStore)
-                    .id(terminalStore.sessionID)
-                    .padding(.horizontal, 12)
-                    .padding(.vertical, 10)
-            } else {
-                HStack {
-                    Text(mothx.sessions.first(where: { $0.id == sessionID })?.title ?? c.workspace)
-                        .font(.system(size: 14, weight: .medium))
-                    Spacer()
-                    if let sessionID, !readOnly {
-                        Button {
-                            let uiRunActive = mothx.runSessionID == sessionID && (mothx.isRunning || mothx.isSubmittingRun)
-                            // If this session already owns a retained TUI,
-                            // this is only a reattach. Do not cancel the Run
-                            // just because the detached PTY is still alive.
-                            let hasRetainedTUI = terminalStore.hasTerminal(sessionID: sessionID)
-                            mothx.requestModeSwitch(isRunning: uiRunActive && !hasRetainedTUI) {
-                                Task { @MainActor in
-                                    if mothx.runSessionID == sessionID && (mothx.isRunning || mothx.isSubmittingRun) {
-                                        await mothx.cancelRun()
-                                        await mothx.waitForSessionIdle(sessionID)
-                                    }
-                                    terminalStore.open(sessionID: sessionID, workDir: mothx.workDir(for: sessionID))
-                                }
+            HStack {
+                Text(mothx.sessions.first(where: { $0.id == sessionID })?.title ?? c.workspace)
+                    .font(.system(size: 14, weight: .medium))
+                Spacer()
+                CurrentDirectoryMenu(path: currentWorkDir)
+                    // The sidebar toggle is overlaid against the window's
+                    // trailing edge. Reserve its slot while the sidebar
+                    // is closed so it never covers the directory menu.
+                    .padding(.trailing, isRightSidebarOpen ? 0 : 46)
+            }.padding(.horizontal, 24).frame(height: 54)
+            Divider()
+
+            if let sessionID {
+                GeometryReader { _ in
+                    ScrollViewReader { reader in
+                    ScrollView {
+                        LazyVStack(alignment: .leading, spacing: 6) {
+                            // Top sentinel: a historical turn is read from
+                            // its beginning, so "show turn" targets this.
+                            Color.clear
+                                .frame(height: 1)
+                                .id(conversationTopID)
+
+                            // Exactly one turn lives in the transcript tree:
+                            // the newest by default, or the historical turn
+                            // picked from the top-right menu.
+                            ForEach(visibleTurns) { turn in
+                                TurnBlock(
+                                    turn: turn,
+                                    sessionID: sessionID,
+                                    isContentReady: preparedTurnIDs.contains(turn.id),
+                                    onFork: { message in fork(from: message) },
+                                    forkingMessageID: forkingMessageID,
+                                    onReviewChanges: presentReview,
+                                    onPreviewSkill: presentSkillPreview,
+                                    onPreviewTool: presentToolPreview,
+                                    onPreviewImage: presentImagePreview,
+                                    onPreviewVideo: presentVideoPreview,
+                                    onPreviewDocument: presentDocumentPreview
+                                )
                             }
-                        } label: {
-                            Label(c.terminalMode, systemImage: "terminal")
-                                .font(.callout)
-                                .padding(.horizontal, 8)
-                                .frame(minHeight: 30)
-                                .contentShape(Rectangle())
+
+                            // Reading an older turn: the way back to the
+                            // newest one sits directly under the turn that
+                            // is being read, centered.
+                            if !isViewingLatestTurn {
+                                Button {
+                                    if let latest = currentTurns.last { selectTurn(latest) }
+                                } label: {
+                                    Label(c.backToLatestTurn, systemImage: "arrow.down.to.line")
+                                        .font(.caption.weight(.medium))
+                                        .padding(.horizontal, 10)
+                                        .padding(.vertical, 6)
+                                        .contentShape(Capsule())
+                                }
+                                .buttonStyle(.plain)
+                                .foregroundStyle(.secondary)
+                                .background(.regularMaterial, in: Capsule())
+                                .overlay(Capsule().stroke(Color.primary.opacity(0.12), lineWidth: 1))
+                                .shadow(color: .black.opacity(0.12), radius: 5, y: 2)
+                                .padding(.top, 12)
+                                .frame(maxWidth: .infinity, alignment: .center)
+                                .help(c.backToLatestTurn)
+                            }
+
+                            // A session can briefly have no turn while its
+                            // first user message is being attached. Keep
+                            // the same inline status presentation here.
+                            if mothx.runSessionID == sessionID,
+                               mothx.isRunning,
+                               currentTurns.isEmpty,
+                               let status = mothx.runStatus {
+                                StatusInline(
+                                    status: status,
+                                    elapsed: mothx.runElapsed,
+                                    error: mothx.runError,
+                                    thinking: mothx.thinkingBySession[sessionID],
+                                    allowsExpansion: true
+                                )
+                            }
+
+                            // Keep a deliberate breathing space between the
+                            // last message and the composer. Put the scroll
+                            // anchor after the spacer so scrollTo really lands
+                            // on the native bottom instead of stopping above it.
+                            Color.clear
+                                .frame(height: 140)
+                            Color.clear
+                                .frame(height: 1)
+                                .id(conversationBottomID)
                         }
-                        .buttonStyle(.plain)
-                        .hoverHighlight()
-                        .foregroundStyle(.secondary)
-                        .help(c.openTerminalHelp)
+                        .frame(maxWidth: 760, alignment: .leading)
+                        .padding(28)
+                        .frame(maxWidth: .infinity)
+                        // The content's real laid-out height decides the
+                        // scroll position: text reflow, the turn body, file
+                        // preview strips, change cards and artifact cards all
+                        // change it, and the model re-anchors the bottom on
+                        // every change until the height is stable.
+                        .conversationContentHeight(scrollModel)
                     }
-                    CurrentDirectoryMenu(path: currentWorkDir)
-                        // The sidebar toggle is overlaid against the window's
-                        // trailing edge. Reserve its slot while the sidebar
-                        // is closed so it never covers the directory menu.
-                        .padding(.trailing, isRightSidebarOpen ? 0 : 46)
-                }.padding(.horizontal, 24).frame(height: 54)
-                Divider()
-
-                if let sessionID {
-                    GeometryReader { _ in
-                        ScrollViewReader { reader in
-                        ScrollView {
-                            LazyVStack(alignment: .leading, spacing: 6) {
-                                // Top sentinel: a historical turn is read from
-                                // its beginning, so "show turn" targets this.
-                                Color.clear
-                                    .frame(height: 1)
-                                    .id(conversationTopID)
-
-                                // Exactly one turn lives in the transcript tree:
-                                // the newest by default, or the historical turn
-                                // picked from the top-right menu.
-                                ForEach(visibleTurns) { turn in
-                                    TurnBlock(
-                                        turn: turn,
-                                        sessionID: sessionID,
-                                        isContentReady: preparedTurnIDs.contains(turn.id),
-                                        onFork: { message in fork(from: message) },
-                                        forkingMessageID: forkingMessageID,
-                                        onReviewChanges: presentReview,
-                                        onPreviewSkill: presentSkillPreview,
-                                        onPreviewTool: presentToolPreview,
-                                        onPreviewImage: presentImagePreview,
-                                        onPreviewVideo: presentVideoPreview,
-                                        onPreviewDocument: presentDocumentPreview
-                                    )
-                                }
-
-                                // Reading an older turn: the way back to the
-                                // newest one sits directly under the turn that
-                                // is being read, centered.
-                                if !isViewingLatestTurn {
-                                    Button {
-                                        if let latest = currentTurns.last { selectTurn(latest) }
-                                    } label: {
-                                        Label(c.backToLatestTurn, systemImage: "arrow.down.to.line")
-                                            .font(.caption.weight(.medium))
-                                            .padding(.horizontal, 10)
-                                            .padding(.vertical, 6)
-                                            .contentShape(Capsule())
-                                    }
-                                    .buttonStyle(.plain)
-                                    .foregroundStyle(.secondary)
-                                    .background(.regularMaterial, in: Capsule())
-                                    .overlay(Capsule().stroke(Color.primary.opacity(0.12), lineWidth: 1))
-                                    .shadow(color: .black.opacity(0.12), radius: 5, y: 2)
-                                    .padding(.top, 12)
-                                    .frame(maxWidth: .infinity, alignment: .center)
-                                    .help(c.backToLatestTurn)
-                                }
-
-                                // A session can briefly have no turn while its
-                                // first user message is being attached. Keep
-                                // the same inline status presentation here.
-                                if mothx.runSessionID == sessionID,
-                                   mothx.isRunning,
-                                   currentTurns.isEmpty,
-                                   let status = mothx.runStatus {
-                                    StatusInline(
-                                        status: status,
-                                        elapsed: mothx.runElapsed,
-                                        error: mothx.runError,
-                                        thinking: mothx.thinkingBySession[sessionID],
-                                        allowsExpansion: true
-                                    )
-                                }
-
-                                // Keep a deliberate breathing space between the
-                                // last message and the composer. Put the scroll
-                                // anchor after the spacer so scrollTo really lands
-                                // on the native bottom instead of stopping above it.
-                                Color.clear
-                                    .frame(height: 140)
-                                Color.clear
-                                    .frame(height: 1)
-                                    .id(conversationBottomID)
-                            }
-                            .frame(maxWidth: 760, alignment: .leading)
-                            .padding(28)
-                            .frame(maxWidth: .infinity)
-                            // The content's real laid-out height decides the
-                            // scroll position: text reflow, the turn body, file
-                            // preview strips, change cards and artifact cards all
-                            // change it, and the model re-anchors the bottom on
-                            // every change until the height is stable.
-                            .conversationContentHeight(scrollModel)
+                    // A new conversation gets a brand-new scroll view, so
+                    // the previous one's scroll offset cannot survive into
+                    // it (`.defaultScrollAnchor(.initialOffset)` then applies
+                    // to the fresh view and opens it at the bottom).
+                    .id(conversationIdentity)
+                    .coordinateSpace(name: "conversation-scroll")
+                    // Anchor the first paint (and, while the newest turn is
+                    // displayed, every content-size change) to the bottom, so
+                    // a restored or switched conversation opens at the bottom
+                    // and a streaming reply stays pinned without any settle
+                    // loop. Reading a historical turn clears the size-change
+                    // anchor so its body committing cannot yank the viewport
+                    // to that turn's end.
+                    .conversationBottomAnchoring(
+                        pinOnSizeChanges: isViewingLatestTurn && scrollModel.followBottom
+                    )
+                    // Bottom detection and positioning both belong to
+                    // SwiftUI now: `onScrollGeometryChange` (+ scroll phase)
+                    // on macOS 15, a read-only AppKit probe on macOS 14.
+                    .conversationScrollObservation(scrollModel)
+                    // The single positioning path. `.task(id:)` coalesces
+                    // every request produced inside one update and cancels
+                    // the previous pass, so at most one `scrollTo` is ever
+                    // in flight, and it runs *after* the update commits —
+                    // which is exactly what used to race the LazyVStack.
+                    .task(id: scrollModel.request.revision) {
+                        // A request that predates the current restore must
+                        // not position the new conversation; the restore
+                        // issues its own jump once the content is committed.
+                        guard !scrollModel.isSuppressed else { return }
+                        await performScrollRequest(reader)
+                    }
+                    .onChange(of: mothx.messagesBySession[sessionID] ?? []) { _, _ in
+                        // While a saved conversation is being restored the
+                        // model is suppressed, and while a historical turn is
+                        // displayed the transcript must not follow the live
+                        // stream: both gates live in the model.
+                        guard isViewingLatestTurn else { return }
+                        scrollModel.contentDidChange(animated: false)
+                    }
+                    .onChange(of: currentTurns.count) { _, _ in
+                        // The initial history request completes after the
+                        // ScrollView has appeared. Re-pin the bottom once
+                        // the turn list is committed so a restored session
+                        // never opens on a blank viewport.
+                        guard isViewingLatestTurn else { return }
+                        scrollModel.contentDidChange(animated: false)
+                    }
+                    .onChange(of: mothx.thinkingBySession[sessionID] ?? "") { _, _ in
+                        guard isViewingLatestTurn else { return }
+                        if mothx.runSessionID == sessionID, mothx.isRunning {
+                            scrollModel.contentDidChange(animated: true)
                         }
-                        // A new conversation gets a brand-new scroll view, so
-                        // the previous one's scroll offset cannot survive into
-                        // it (`.defaultScrollAnchor(.initialOffset)` then applies
-                        // to the fresh view and opens it at the bottom).
-                        .id(conversationIdentity)
-                        .coordinateSpace(name: "conversation-scroll")
-                        // Anchor the first paint (and, while the newest turn is
-                        // displayed, every content-size change) to the bottom, so
-                        // a restored or switched conversation opens at the bottom
-                        // and a streaming reply stays pinned without any settle
-                        // loop. Reading a historical turn clears the size-change
-                        // anchor so its body committing cannot yank the viewport
-                        // to that turn's end.
-                        .conversationBottomAnchoring(
-                            pinOnSizeChanges: isViewingLatestTurn && scrollModel.followBottom
-                        )
-                        // Bottom detection and positioning both belong to
-                        // SwiftUI now: `onScrollGeometryChange` (+ scroll phase)
-                        // on macOS 15, a read-only AppKit probe on macOS 14.
-                        .conversationScrollObservation(scrollModel)
-                        // The single positioning path. `.task(id:)` coalesces
-                        // every request produced inside one update and cancels
-                        // the previous pass, so at most one `scrollTo` is ever
-                        // in flight, and it runs *after* the update commits —
-                        // which is exactly what used to race the LazyVStack.
-                        .task(id: scrollModel.request.revision) {
-                            // A request that predates the current restore must
-                            // not position the new conversation; the restore
-                            // issues its own jump once the content is committed.
-                            guard !scrollModel.isSuppressed else { return }
-                            await performScrollRequest(reader)
-                        }
-                        .onChange(of: mothx.messagesBySession[sessionID] ?? []) { _, _ in
-                            // While a saved conversation is being restored the
-                            // model is suppressed, and while a historical turn is
-                            // displayed the transcript must not follow the live
-                            // stream: both gates live in the model.
-                            guard isViewingLatestTurn else { return }
-                            scrollModel.contentDidChange(animated: false)
-                        }
-                        .onChange(of: currentTurns.count) { _, _ in
-                            // The initial history request completes after the
-                            // ScrollView has appeared. Re-pin the bottom once
-                            // the turn list is committed so a restored session
-                            // never opens on a blank viewport.
-                            guard isViewingLatestTurn else { return }
-                            scrollModel.contentDidChange(animated: false)
-                        }
-                        .onChange(of: mothx.thinkingBySession[sessionID] ?? "") { _, _ in
-                            guard isViewingLatestTurn else { return }
-                            if mothx.runSessionID == sessionID, mothx.isRunning {
-                                scrollModel.contentDidChange(animated: true)
-                            }
-                        }
-                        .onChange(of: mothx.runStatus) { _, _ in
-                            guard mothx.runSessionID == sessionID else { return }
-                            let terminalStatuses = ["completed", "succeeded", "failed", "error", "cancelled", "canceled", "timed_out", "timeout", "expired", "incomplete"]
-                            if terminalStatuses.contains((mothx.runStatus ?? "").lowercased()) {
-                                logRunTerminal()
-                                scrollModel.requireJump(.runTerminal)
-                            } else if mothx.isRunning {
-                                scrollModel.contentDidChange(animated: true)
-                            }
-                        }
-                        .onChange(of: mothx.isRunning) { wasRunning, isRunning in
-                            guard mothx.runSessionID == sessionID, wasRunning, !isRunning else { return }
-                            // The final transcript can be shorter than the
-                            // streaming projection. Re-pin after the terminal
-                            // layout commits so the swapped-in content is not
-                            // left off-screen.
-                            logScroll("runIdle", "turns=\(currentTurns.count)")
+                    }
+                    .onChange(of: mothx.runStatus) { _, _ in
+                        guard mothx.runSessionID == sessionID else { return }
+                        let terminalStatuses = ["completed", "succeeded", "failed", "error", "cancelled", "canceled", "timed_out", "timeout", "expired", "incomplete"]
+                        if terminalStatuses.contains((mothx.runStatus ?? "").lowercased()) {
+                            logRunTerminal()
                             scrollModel.requireJump(.runTerminal)
+                        } else if mothx.isRunning {
+                            scrollModel.contentDidChange(animated: true)
                         }
-                        .onChange(of: reviewedChanges == nil) { _, isClosed in
-                            guard isClosed, conversationWasAtBottomBeforeReview else { return }
-                            logScroll("reviewClosed")
-                            scrollModel.requireJump(.userRequested, animated: true)
-                        }
-                        .overlay {
-                            // While a saved conversation is being restored the
-                            // turn list is intentionally empty (stale turns from
-                            // the previous session are dropped first so the
-                            // final scroll lands against this session's own
-                            // layout). Show an explicit loading state instead of
-                            // a blank conversation area.
-                            if isRestoringConversation && currentTurns.isEmpty {
-                                VStack(spacing: 10) {
-                                    ProgressView()
-                                        .controlSize(.small)
-                                    Text("加载会话… / Loading session…")
-                                        .font(.caption)
-                                        .foregroundStyle(.secondary)
-                                }
-                                .padding(20)
-                                .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12))
+                    }
+                    .onChange(of: mothx.isRunning) { wasRunning, isRunning in
+                        guard mothx.runSessionID == sessionID, wasRunning, !isRunning else { return }
+                        // The final transcript can be shorter than the
+                        // streaming projection. Re-pin after the terminal
+                        // layout commits so the swapped-in content is not
+                        // left off-screen.
+                        logScroll("runIdle", "turns=\(currentTurns.count)")
+                        scrollModel.requireJump(.runTerminal)
+                    }
+                    .onChange(of: reviewedChanges == nil) { _, isClosed in
+                        guard isClosed, conversationWasAtBottomBeforeReview else { return }
+                        logScroll("reviewClosed")
+                        scrollModel.requireJump(.userRequested, animated: true)
+                    }
+                    .overlay {
+                        // While a saved conversation is being restored the
+                        // turn list is intentionally empty (stale turns from
+                        // the previous session are dropped first so the
+                        // final scroll lands against this session's own
+                        // layout). Show an explicit loading state instead of
+                        // a blank conversation area.
+                        if isRestoringConversation && currentTurns.isEmpty {
+                            VStack(spacing: 10) {
+                                ProgressView()
+                                    .controlSize(.small)
+                                Text("加载会话… / Loading session…")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
                             }
+                            .padding(20)
+                            .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12))
                         }
-                        .overlay(alignment: .topTrailing) {
-                            // Every turn except the displayed one lives here, in
-                            // time order (newest first), so the conversation
-                            // itself never renders more than one turn.
-                            if currentTurns.count > 1 {
-                                Menu {
-                                    ForEach(Array(currentTurns.reversed())) { turn in
-                                        Button {
-                                            selectTurn(turn)
-                                        } label: {
-                                            if displayedTurn?.id == turn.id {
-                                                Label(turnMenuTitle(turn), systemImage: "checkmark")
-                                            } else {
-                                                Text(turnMenuTitle(turn))
-                                            }
+                    }
+                    .overlay(alignment: .topTrailing) {
+                        // Every turn except the displayed one lives here, in
+                        // time order (newest first), so the conversation
+                        // itself never renders more than one turn.
+                        if currentTurns.count > 1 {
+                            Menu {
+                                ForEach(Array(currentTurns.reversed())) { turn in
+                                    Button {
+                                        selectTurn(turn)
+                                    } label: {
+                                        if displayedTurn?.id == turn.id {
+                                            Label(turnMenuTitle(turn), systemImage: "checkmark")
+                                        } else {
+                                            Text(turnMenuTitle(turn))
                                         }
                                     }
-                                } label: {
-                                    Image(systemName: "ellipsis")
-                                        .font(.system(size: 15, weight: .semibold))
-                                        .frame(width: 34, height: 30)
-                                        .contentShape(RoundedRectangle(cornerRadius: 8))
                                 }
-                                .menuStyle(.borderlessButton)
-                                .menuIndicator(.hidden)
-                                .fixedSize()
-                                .foregroundStyle(.secondary)
-                                .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 8))
-                                .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color.primary.opacity(0.12), lineWidth: 1))
-                                .shadow(color: .black.opacity(0.12), radius: 5, y: 2)
-                                .padding(.top, 10)
-                                .padding(.trailing, 18)
-                                .help(c.turnHistoryHelp)
+                            } label: {
+                                Image(systemName: "ellipsis")
+                                    .font(.system(size: 15, weight: .semibold))
+                                    .frame(width: 34, height: 30)
+                                    .contentShape(RoundedRectangle(cornerRadius: 8))
                             }
+                            .menuStyle(.borderlessButton)
+                            .menuIndicator(.hidden)
+                            .fixedSize()
+                            .foregroundStyle(.secondary)
+                            .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 8))
+                            .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color.primary.opacity(0.12), lineWidth: 1))
+                            .shadow(color: .black.opacity(0.12), radius: 5, y: 2)
+                            .padding(.top, 10)
+                            .padding(.trailing, 18)
+                            .help(c.turnHistoryHelp)
                         }
-                        .overlay(alignment: .bottom) {
-                            // The round button jumps to the end of the live
-                            // conversation; when reading history the pill above
-                            // is the way back, so this one is hidden.
-                            if !scrollModel.atBottom, isViewingLatestTurn {
-                                ConversationScrollButton(isRunning: mothx.runSessionID == sessionID && mothx.isRunning) {
-                                    // Ask the model first so the intent is
-                                    // recorded even if the observer's landing
-                                    // pass declines to report it back.
-                                    scrollModel.pinToBottom()
-                                }
-                                .padding(.bottom, 12)
+                    }
+                    .overlay(alignment: .bottom) {
+                        // The round button jumps to the end of the live
+                        // conversation; when reading history the pill above
+                        // is the way back, so this one is hidden.
+                        if !scrollModel.atBottom, isViewingLatestTurn {
+                            ConversationScrollButton(isRunning: mothx.runSessionID == sessionID && mothx.isRunning) {
+                                // Ask the model first so the intent is
+                                // recorded even if the observer's landing
+                                // pass declines to report it back.
+                                scrollModel.pinToBottom()
                             }
+                            .padding(.bottom, 12)
                         }
                     }
                 }
+            }
 
-                } else {
-                    Spacer(); Text(c.workspaceHint).foregroundStyle(.secondary); Spacer()
-                }
+            } else {
+                Spacer(); Text(c.workspaceHint).foregroundStyle(.secondary); Spacer()
+            }
 
-                if !readOnly {
-                    VStack(spacing: 8) {
-                        let recognitionProgress = mothx.imageRecognitionProgress
-                        if recognitionProgress.isVisible && recognitionProgress.sessionID == sessionID {
-                            ImageRecognitionProgressCard(progress: recognitionProgress)
-                        }
-                        if imageGenerationMenuOpen || imageGenerationSelection != nil {
-                            ImageGenerationChoiceCard(
-                                selection: imageGenerationSelection,
-                                configuredProvider: mothx.imageGeneration.providerID,
-                                configuredModel: mothx.imageGeneration.modelID,
-                                configuredEnabled: mothx.imageGeneration.enabled,
-                                onSelect: chooseImageGenerationModel,
-                                onCancel: cancelImageGeneration
-                            )
-                        }
-                        PromptComposer(
-                            prompt: $prompt,
-                            attachments: $attachments,
-                            mode: $selectedMode,
-                            providerID: $selectedProviderID,
-                            modelID: $selectedModelID,
-                            providers: mothx.providers,
-                            skills: mothx.installedSkills,
-                            discoverable: mothx.discoverableSkills,
-                            onAddSkill: addSkill,
-                            selectedSkills: $selectedSkills,
-                            selectedTools: $selectedTools,
-                            models: currentModels,
-                            isRunning: mothx.runSessionID == sessionID && (mothx.isSubmittingRun || mothx.isStreaming),
-                            promptPlaceholder: imageGenerationSelection == nil
-                                ? c.askAnything
-                                : c.text("请输入生图提示词", "Enter an image generation prompt"),
-                            contextUsedTokens: sessionMetrics.contextUsedTokens,
-                            contextWindowTokens: sessionMetrics.contextWindowTokens,
-                            cacheHitRate: sessionMetrics.cacheHitRate,
-                            chooseFiles: chooseFiles,
-                            addAttachmentFiles: addAttachmentFiles,
-                            onPasteImage: addPastedImage,
-                            submit: submit,
-                            stop: { Task { await mothx.cancelRun() } }
+            if !readOnly {
+                VStack(spacing: 8) {
+                    let recognitionProgress = mothx.imageRecognitionProgress
+                    if recognitionProgress.isVisible && recognitionProgress.sessionID == sessionID {
+                        ImageRecognitionProgressCard(progress: recognitionProgress)
+                    }
+                    if imageGenerationMenuOpen || imageGenerationSelection != nil {
+                        ImageGenerationChoiceCard(
+                            selection: imageGenerationSelection,
+                            configuredProvider: mothx.imageGeneration.providerID,
+                            configuredModel: mothx.imageGeneration.modelID,
+                            configuredEnabled: mothx.imageGeneration.enabled,
+                            onSelect: chooseImageGenerationModel,
+                            onCancel: cancelImageGeneration
                         )
                     }
-                    .frame(maxWidth: 760)
-                    .padding(.horizontal, 25)
-                    .padding(.bottom, 16)
+                    PromptComposer(
+                        prompt: $prompt,
+                        attachments: $attachments,
+                        mode: $selectedMode,
+                        providerID: $selectedProviderID,
+                        modelID: $selectedModelID,
+                        providers: mothx.providers,
+                        skills: mothx.installedSkills,
+                        discoverable: mothx.discoverableSkills,
+                        onAddSkill: addSkill,
+                        selectedSkills: $selectedSkills,
+                        selectedTools: $selectedTools,
+                        models: currentModels,
+                        isRunning: mothx.runSessionID == sessionID && (mothx.isSubmittingRun || mothx.isStreaming),
+                        promptPlaceholder: imageGenerationSelection == nil
+                            ? c.askAnything
+                            : c.text("请输入生图提示词", "Enter an image generation prompt"),
+                        contextUsedTokens: sessionMetrics.contextUsedTokens,
+                        contextWindowTokens: sessionMetrics.contextWindowTokens,
+                        cacheHitRate: sessionMetrics.cacheHitRate,
+                        chooseFiles: chooseFiles,
+                        addAttachmentFiles: addAttachmentFiles,
+                        onPasteImage: addPastedImage,
+                        submit: submit,
+                        stop: { Task { await mothx.cancelRun() } }
+                    )
                 }
+                .frame(maxWidth: 760)
+                .padding(.horizontal, 25)
+                .padding(.bottom, 16)
             }
         }.padding(.top, 1)
         .alert(c.attach, isPresented: Binding(get: { attachmentError != nil }, set: { if !$0 { attachmentError = nil } })) {
@@ -658,27 +620,12 @@ struct WorkspaceView: View {
             guard let sessionID, !isRestoringSession, imageGenerationSelection == nil else { return }
             mothx.setSessionModel(newModel, for: sessionID)
         }
-        .onChange(of: terminalStore.isOpen) { _, isOpen in
-            guard !isOpen, let sessionID else { return }
-            // Returning from terminal mode: reload the conversation so any
-            // messages added by the mothx TUI (same session) show up.
-            Task {
-                await mothx.loadMessages(sessionID: sessionID)
-                await mothx.attachToActiveRun(sessionID: sessionID)
-            }
-        }
         .onChange(of: sessionID) { _, newSessionID in
             // A review/preview belongs to the previous conversation. Close
             // it before the newly selected session is rendered.
             if isRightSidebarOpen {
                 closeRightSidebar()
             }
-            // While terminal mode is active, switching to another session in
-            // the sidebar changes the visible terminal. The previous session's
-            // retained TUI process remains alive and can be shown again later.
-            guard terminalStore.isOpen, let newSessionID,
-                  terminalStore.sessionID != newSessionID else { return }
-            terminalStore.open(sessionID: newSessionID, workDir: mothx.workDir(for: newSessionID))
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .padding(.trailing, isRightSidebarOpen ? rightSidebarColumnWidth : 0)
@@ -698,7 +645,7 @@ struct WorkspaceView: View {
         .coordinateSpace(name: "workspace")
         }
         .overlay(alignment: .topTrailing) {
-            if !isRightSidebarOpen && !terminalStore.isOpen {
+            if !isRightSidebarOpen {
                 rightSidebarToggleButton
             }
         }

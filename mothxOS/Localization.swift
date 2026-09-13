@@ -345,18 +345,6 @@ struct Copy {
     var appearanceAuto: String { text("自动", "Auto") }
     var closeSettings: String { text("关闭设置", "Close settings") }
 
-    // MARK: - TUI terminal
-    var openInTUI: String { text("在 TUI 中打开", "Open in TUI") }
-    var terminal: String { text("终端", "Terminal") }
-    var terminalCloseHelp: String { text("关闭终端", "Close terminal") }
-    var terminalMode: String { text("终端模式", "Terminal mode") }
-    var openTerminalHelp: String { text("在终端中打开当前会话", "Open current session in terminal") }
-    func terminalExited(_ code: Int32) -> String { text("TUI 已退出（代码 \(code)）", "TUI exited (code \(code))") }
-    var terminalLaunchFailed: String { text("未找到 mothx，无法启动 TUI", "mothx not found; unable to start TUI") }
-    var switchStopTaskTitle: String { text("停止当前任务？", "Stop current task?") }
-    var switchStopTaskMessage: String { text("当前模式正在执行，切换模式将停止当前任务。确定要切换吗？", "The current mode is running. Switching modes will stop the current task. Continue?") }
-    var stopAndSwitch: String { text("停止并切换", "Stop and switch") }
-    var continueAndSwitch: String { text("继续执行并切换", "Continue and switch") }
 
     // MARK: - MCP
 

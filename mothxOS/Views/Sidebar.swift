@@ -3,7 +3,6 @@ import SwiftUI
 struct Sidebar: View {
     @EnvironmentObject private var mothx: MothxServiceManager
     @EnvironmentObject private var languageStore: LanguageStore
-    @EnvironmentObject private var terminalStore: TerminalSessionStore
     @ObservedObject var teamManager: TeamRunManager
     @Binding var selectedProjectID: String?
     @Binding var selectedSessionID: String?
@@ -100,29 +99,13 @@ struct Sidebar: View {
                                 selectedProjectID = project.id
                                 showSettings = false
                             }
-                        }, delete: { pendingDelete = .project(project.id) }, requestDeleteSession: { pendingDelete = .session($0) }, openInTUI: { session in
-                            mothx.requestSwitch(activeRunSessionID: selectedSessionID) {
-                                showSettings = false
-                                selectedTeamProjectID = nil
-                                selectedSessionID = session.id
-                                selectedProjectID = session.projectID
-                                terminalStore.open(sessionID: session.id, workDir: mothx.workDir(for: session.id))
-                            }
-                        })
+                        }, delete: { pendingDelete = .project(project.id) }, requestDeleteSession: { pendingDelete = .session($0) })
                     }
                     UnassignedProjectTreeRow(selectedSessionID: $selectedSessionID, selectedTeamProjectID: $selectedTeamProjectID, showSettings: $showSettings, requestDelete: { pendingDelete = .session($0) }, moveToProject: { sessionID, projectID in
                         Task {
                             await mothx.moveSessionToProject(sessionID: sessionID, projectID: projectID)
                             selectedProjectID = projectID
                             expandedProjects.insert(projectID)
-                        }
-                    }, openInTUI: { session in
-                        mothx.requestSwitch(activeRunSessionID: selectedSessionID) {
-                            showSettings = false
-                            selectedTeamProjectID = nil
-                            selectedSessionID = session.id
-                            selectedProjectID = session.projectID
-                            terminalStore.open(sessionID: session.id, workDir: mothx.workDir(for: session.id))
                         }
                     })
                 }
@@ -342,13 +325,11 @@ struct TeamProjectTreeRow: View {
 struct UnassignedProjectTreeRow: View {
     @EnvironmentObject private var mothx: MothxServiceManager
     @EnvironmentObject private var languageStore: LanguageStore
-    @EnvironmentObject private var terminalStore: TerminalSessionStore
     @Binding var selectedSessionID: String?
     @Binding var selectedTeamProjectID: String?
     @Binding var showSettings: Bool
     let requestDelete: (String) -> Void
     let moveToProject: (String, String) -> Void
-    let openInTUI: (MothxSession) -> Void
     @State private var expanded = true
     @State private var isHovered = false
 
@@ -379,14 +360,14 @@ struct UnassignedProjectTreeRow: View {
                 ForEach(sessions) { session in
                     SessionTreeRow(session: session, selected: selectedSessionID == session.id, select: {
                         guard selectedSessionID != session.id else { return }
-                        mothx.requestSwitch(activeRunSessionID: selectedSessionID) {
+                        mothx.requestSwitch {
                             selectedTeamProjectID = nil
                             selectedSessionID = session.id
                             showSettings = false
                         }
                     }, delete: { requestDelete(session.id) }, moveToProject: { projectID in
                         moveToProject(session.id, projectID)
-                    }, openInTUI: openInTUI)
+                    })
                 }
                 if sessions.isEmpty { Text(languageStore.copy.noSessions).font(.caption).foregroundStyle(.tertiary).padding(.leading, 27).padding(.vertical, 4) }
             }
@@ -398,11 +379,9 @@ struct UnassignedProjectTreeRow: View {
 struct ProjectTreeRow: View {
     @EnvironmentObject private var mothx: MothxServiceManager
     @EnvironmentObject private var languageStore: LanguageStore
-    @EnvironmentObject private var terminalStore: TerminalSessionStore
     let project: MothxProject; let expanded: Bool
     @Binding var selectedProjectID: String?; @Binding var selectedSessionID: String?; @Binding var selectedTeamProjectID: String?; @Binding var showSettings: Bool
     let toggle: () -> Void; let addSession: () -> Void; let delete: () -> Void; let requestDeleteSession: (String) -> Void
-    let openInTUI: (MothxSession) -> Void
     @State private var showEditor = false
     @State private var editedName = ""
     @State private var editedWorkDir = ""
@@ -463,13 +442,13 @@ struct ProjectTreeRow: View {
                 ForEach(projectSessions) { session in
                     SessionTreeRow(session: session, selected: selectedSessionID == session.id, select: {
                         guard selectedSessionID != session.id else { return }
-                        mothx.requestSwitch(activeRunSessionID: selectedSessionID) {
+                        mothx.requestSwitch {
                             selectedTeamProjectID = nil
                             selectedProjectID = project.id
                             selectedSessionID = session.id
                             showSettings = false
                         }
-                    }, delete: { requestDeleteSession(session.id) }, moveToProject: nil, openInTUI: openInTUI)
+                    }, delete: { requestDeleteSession(session.id) }, moveToProject: nil)
                 }
                 if projectSessions.isEmpty {
                     Text(languageStore.copy.text("暂无会话", "No sessions yet"))
@@ -518,7 +497,6 @@ struct SessionTreeRow: View {
     @EnvironmentObject private var languageStore: LanguageStore
     let session: MothxSession; let selected: Bool; let select: () -> Void; let delete: () -> Void
     let moveToProject: ((String) -> Void)?
-    let openInTUI: (MothxSession) -> Void
     @State private var isHovered = false
 
     var body: some View {
@@ -546,12 +524,6 @@ struct SessionTreeRow: View {
                         }
                         Divider()
                     }
-                    Button {
-                        openInTUI(session)
-                    } label: {
-                        Label(languageStore.copy.openInTUI, systemImage: "terminal")
-                    }
-                    Divider()
                     Button(role: .destructive, action: delete) {
                         Label(languageStore.copy.delete, systemImage: "trash")
                     }

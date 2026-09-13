@@ -2312,8 +2312,7 @@ final class MothxServiceManager: ObservableObject {
     }
 
     /// Returns whether mothx has a durable Agent Run currently active for a
-    /// session. An open TUI process is not itself an active Agent Run: the TUI
-    /// stays alive while waiting for the next user command.
+    /// session.
     func sessionHasActiveRun(_ sessionID: String) async -> Bool {
         guard !sessionID.isEmpty else { return false }
         do {
@@ -2327,87 +2326,12 @@ final class MothxServiceManager: ObservableObject {
         }
     }
 
-    /// Waits briefly for the server-side session lock to be released after a
-    /// confirmed UI-to-TUI stop. The cancel endpoint is asynchronous and may
-    /// return before the runtime has finished terminalizing the Run.
-    func waitForSessionIdle(_ sessionID: String) async {
-        guard !sessionID.isEmpty else { return }
-        for _ in 0..<20 {
-            do {
-                let data = try await request(path: "api/sessions/\(sessionID)/runtime", method: "GET")
-                if let object = try JSONSerialization.jsonObject(with: data) as? [String: Any],
-                   object["activeRun"] is [String: Any] {
-                    try? await Task.sleep(for: .milliseconds(250))
-                    continue
-                }
-            } catch {
-                // A transient probe failure should not block the mode switch;
-                // the TUI will report a genuine startup error if needed.
-            }
-            return
-        }
-    }
-
     // MARK: - Session switching
-
-    private(set) var pendingSwitchAction: (() -> Void)?
-    @Published private(set) var showSwitchConfirmation = false
-
-    /// Requests a UI/TUI mode change. Mode changes while the current mode is
-    /// actively executing are destructive, so defer them until confirmation.
-    /// Plain session navigation deliberately does not use this method.
-    func requestModeSwitch(isRunning: Bool, _ action: @escaping () -> Void) {
-        requestModeSwitch(isRunning: isRunning, continueAction: nil, action)
-    }
-
-    private(set) var pendingContinueSwitchAction: (() -> Void)?
-    @Published private(set) var canContinueModeSwitch = false
-
-    /// Requests a mode switch with an optional detach path. The detach path
-    /// is used by TUI → UI: the TUI keeps running while UI observes its Run.
-    func requestModeSwitch(isRunning: Bool, continueAction: (() -> Void)?, _ action: @escaping () -> Void) {
-        guard isRunning else {
-            (continueAction ?? action)()
-            return
-        }
-        pendingContinueSwitchAction = continueAction
-        canContinueModeSwitch = continueAction != nil
-        pendingSwitchAction = action
-        showSwitchConfirmation = true
-    }
-
-    func confirmSwitch() {
-        showSwitchConfirmation = false
-        let action = pendingSwitchAction
-        pendingSwitchAction = nil
-        pendingContinueSwitchAction = nil
-        canContinueModeSwitch = false
-        action?()
-    }
-
-    func continueSwitch() {
-        showSwitchConfirmation = false
-        let action = pendingContinueSwitchAction
-        pendingSwitchAction = nil
-        pendingContinueSwitchAction = nil
-        canContinueModeSwitch = false
-        action?()
-    }
-
-    func cancelSwitch() {
-        showSwitchConfirmation = false
-        pendingSwitchAction = nil
-        pendingContinueSwitchAction = nil
-        canContinueModeSwitch = false
-    }
 
     /// Switch sessions immediately without changing the active Run. Runs are
     /// durable server-side tasks, so a UI selection change must not cancel the
     /// run or block navigation.
-    /// `activeRunSessionID` is retained for source compatibility with callers
-    /// that also use this helper for terminal-mode switches.
-    func requestSwitch(activeRunSessionID: String? = nil, _ action: @escaping () -> Void) {
-        _ = activeRunSessionID
+    func requestSwitch(_ action: @escaping () -> Void) {
         action()
     }
 

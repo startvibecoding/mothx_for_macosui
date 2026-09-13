@@ -106,15 +106,6 @@ struct ContentView: View {
                 }
             }.padding(24).frame(width: 520)
         }
-        .confirmationDialog(languageStoreCopy.switchStopTaskTitle, isPresented: Binding(get: { mothx.showSwitchConfirmation }, set: { if !$0 { mothx.cancelSwitch() } }), titleVisibility: .visible) {
-            if mothx.canContinueModeSwitch {
-                Button(languageStoreCopy.continueAndSwitch) { mothx.continueSwitch() }
-            }
-            Button(languageStoreCopy.stopAndSwitch, role: .destructive) { mothx.confirmSwitch() }
-            Button(languageStoreCopy.cancel, role: .cancel) { mothx.cancelSwitch() }
-        } message: {
-            Text(languageStoreCopy.switchStopTaskMessage)
-        }
         .confirmationDialog(pendingRuntimePromptTitle, isPresented: $showUpdatePrompt, titleVisibility: .visible) {
             Button(languageStoreCopy.runtimePromptAction(pendingIsDowngrade)) {
                 pendingUpdateVersion = nil
