@@ -37,6 +37,9 @@ struct WorkspaceView: View {
     /// value pins the transcript to that historical turn, reachable through the
     /// top-right turn menu. There is no per-turn expand/collapse any more.
     @State private var selectedTurnID: String?
+    /// The turn-history popover (a `Button` + popover instead of a `Menu`: a
+    /// borderless `Menu` swallows the hover tooltip).
+    @State private var turnHistoryOpen = false
     /// The newest turn id already shown for the current session, together with
     /// the turn count, so a newly started turn takes over the viewport
     /// (requirement: history moves into the menu) without re-snapping on every
@@ -152,23 +155,29 @@ struct WorkspaceView: View {
                             // newest one sits directly under the turn that
                             // is being read, centered.
                             if !isViewingLatestTurn {
-                                Button {
-                                    if let latest = currentTurns.last { selectTurn(latest) }
-                                } label: {
-                                    Label(c.backToLatestTurn, systemImage: "arrow.down.to.line")
-                                        .font(.caption.weight(.medium))
-                                        .padding(.horizontal, 10)
-                                        .padding(.vertical, 6)
-                                        .contentShape(Capsule())
+                                HStack(spacing: 0) {
+                                    Spacer(minLength: 0)
+                                    Button {
+                                        if let latest = currentTurns.last { selectTurn(latest) }
+                                    } label: {
+                                        Label(c.backToLatestTurn, systemImage: "arrow.down.to.line")
+                                            .font(.caption.weight(.medium))
+                                            .padding(.horizontal, 10)
+                                            .padding(.vertical, 6)
+                                            .contentShape(Capsule())
+                                    }
+                                    .buttonStyle(.plain)
+                                    .foregroundStyle(.secondary)
+                                    .background(.regularMaterial, in: Capsule())
+                                    .overlay(Capsule().stroke(Color.primary.opacity(0.12), lineWidth: 1))
+                                    .shadow(color: .black.opacity(0.12), radius: 5, y: 2)
+                                    // On the Button itself: applying it after a
+                                    // `maxWidth: .infinity` frame gives the
+                                    // tooltip a rect the capsule does not fill.
+                                    .help(c.backToLatestTurn)
+                                    Spacer(minLength: 0)
                                 }
-                                .buttonStyle(.plain)
-                                .foregroundStyle(.secondary)
-                                .background(.regularMaterial, in: Capsule())
-                                .overlay(Capsule().stroke(Color.primary.opacity(0.12), lineWidth: 1))
-                                .shadow(color: .black.opacity(0.12), radius: 5, y: 2)
                                 .padding(.top, 12)
-                                .frame(maxWidth: .infinity, alignment: .center)
-                                .help(c.backToLatestTurn)
                             }
 
                             // A session can briefly have no turn while its
@@ -309,36 +318,27 @@ struct WorkspaceView: View {
                         // time order (newest first), so the conversation
                         // itself never renders more than one turn.
                         if currentTurns.count > 1 {
-                            Menu {
-                                ForEach(Array(currentTurns.reversed())) { turn in
-                                    Button {
-                                        selectTurn(turn)
-                                    } label: {
-                                        if displayedTurn?.id == turn.id {
-                                            Label(turnMenuTitle(turn), systemImage: "checkmark")
-                                        } else {
-                                            Text(turnMenuTitle(turn))
-                                        }
-                                    }
-                                }
+                            Button {
+                                turnHistoryOpen.toggle()
                             } label: {
                                 Image(systemName: "ellipsis")
                                     .font(.system(size: 15, weight: .semibold))
                                     .frame(width: 34, height: 30)
                                     .contentShape(RoundedRectangle(cornerRadius: 8))
-                                    // On the label: a borderless Menu does not
-                                    // reliably surface a tooltip on its wrapper.
-                                    .help(c.turnHistoryHelp)
                             }
-                            .menuStyle(.borderlessButton)
-                            .menuIndicator(.hidden)
-                            .fixedSize()
+                            .buttonStyle(.plain)
                             .foregroundStyle(.secondary)
                             .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 8))
                             .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color.primary.opacity(0.12), lineWidth: 1))
                             .shadow(color: .black.opacity(0.12), radius: 5, y: 2)
                             .padding(.top, 10)
                             .padding(.trailing, 18)
+                            // A `Button` (not a `Menu`) is what makes this
+                            // tooltip actually appear.
+                            .help(c.turnHistoryHelp)
+                            .popover(isPresented: $turnHistoryOpen, arrowEdge: .top) {
+                                turnHistoryPopover
+                            }
                         }
                     }
                     .overlay(alignment: .bottom) {
@@ -995,11 +995,64 @@ struct WorkspaceView: View {
         // Prepare on first visit (placeholder → body, so the body is built
         // against committed content); a revisited turn is already ready.
         Task { await prepareTurn(turn.id) }
-        if isLatest {
-            scrollModel.pinToBottom(animated: false)
-        } else {
-            scrollModel.showTurnFromTop()
+        // Both a historical turn and the newest turn are read from their
+        // beginning: the newest turn opens exactly like a newly started round,
+        // so "back to the latest turn" scrolls to the top as well.
+        scrollModel.showTurnFromTop()
+    }
+
+    /// Turn history: one row per turn, newest first.
+    private var turnHistoryPopover: some View {
+        let c = languageStore.copy
+        return VStack(alignment: .leading, spacing: 2) {
+            Text(c.turnHistoryTitle)
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(.secondary)
+                .padding(.horizontal, 10)
+                .padding(.top, 2)
+                .padding(.bottom, 4)
+            ScrollView {
+                VStack(alignment: .leading, spacing: 1) {
+                    ForEach(Array(currentTurns.reversed())) { turn in
+                        let isDisplayed = displayedTurn?.id == turn.id
+                        Button {
+                            turnHistoryOpen = false
+                            selectTurn(turn)
+                        } label: {
+                            HStack(spacing: 6) {
+                                if isDisplayed {
+                                    Image(systemName: "checkmark")
+                                        .font(.caption2)
+                                        .frame(width: 12)
+                                } else {
+                                    Color.clear.frame(width: 12, height: 1)
+                                }
+                                Text(turnMenuTitle(turn))
+                                    .font(.system(size: 12))
+                                    .lineLimit(1)
+                                    .truncationMode(.middle)
+                                Spacer(minLength: 0)
+                            }
+                            .padding(.horizontal, 8)
+                            .padding(.vertical, 6)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+                        .foregroundStyle(isDisplayed ? .primary : .secondary)
+                        .background(
+                            isDisplayed ? Color.primary.opacity(0.08) : Color.clear,
+                            in: RoundedRectangle(cornerRadius: 6)
+                        )
+                        .help(turnMenuTitle(turn))
+                    }
+                }
+                .padding(.horizontal, 6)
+            }
+            .frame(maxHeight: 320)
         }
+        .padding(.vertical, 8)
+        .frame(width: 330)
     }
 
     /// Give SwiftUI one layout pass to display the loading placeholder before

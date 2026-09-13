@@ -583,6 +583,7 @@ struct Copy {
         open ? text("关闭右侧栏", "Hide the right sidebar") : text("显示右侧栏", "Show the right sidebar")
     }
     var turnHistoryHelp: String { text("历史轮次：选择要查看的一轮", "Past turns: choose one to view") }
+    var turnHistoryTitle: String { text("历史轮次", "Past turns") }
     var backToLatestTurn: String { text("回到最新轮次", "Back to latest turn") }
     var latestTurnBadge: String { text("最新", "Latest") }
     var turnUntitled: String { text("（无标题）", "(untitled)") }

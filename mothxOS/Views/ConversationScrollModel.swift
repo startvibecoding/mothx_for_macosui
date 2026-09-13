@@ -194,9 +194,10 @@ final class ConversationScrollModel: ObservableObject {
         enqueue(.userRequested, anchor: .bottom, animated: animated)
     }
 
-    /// Show a historical turn from its beginning. A historical turn is not
-    /// streaming, so tracking the bottom is meaningless until the user asks
-    /// for the newest turn again.
+    /// Show the selected turn from its beginning — a historical turn *and* the
+    /// newest turn reached through "back to the latest turn", which opens
+    /// exactly like a newly started round. Tracking the bottom stops until the
+    /// user asks for it again (the round button, or scrolling to the bottom).
     func showTurnFromTop() {
         isSuppressed = false
         followBottom = false
