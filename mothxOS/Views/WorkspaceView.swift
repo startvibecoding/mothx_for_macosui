@@ -30,6 +30,8 @@ struct WorkspaceView: View {
     @State private var attachmentError: String?
     @State private var skillActionMessage: String?
     @State private var currentTurns: [Turn] = []
+    /// Owns the conversation's scroll intent (see SCROLL_DESIGN.md).
+    @StateObject private var scrollModel = ConversationScrollModel()
     @State private var expandedTurnIDs: Set<String> = []
     @State private var preparedTurnIDs: Set<String> = []
     @State private var preparingTurnID: String?
@@ -236,6 +238,32 @@ struct WorkspaceView: View {
                             )
                         }
                         .coordinateSpace(name: "conversation-scroll")
+                        // Legacy executor (P1): the scroll model owns *when* to
+                        // move the viewport, this maps the request onto the
+                        // existing AppKit observers so behaviour is unchanged
+                        // until P3 collapses positioning onto SwiftUI alone.
+                        .onChange(of: scrollModel.request.revision) { _, _ in
+                            let request = scrollModel.request
+                            switch request.reason {
+                            case .userRequested:
+                                scrollToBottom(reader, animated: request.animated)
+                                requestScrollToBottom()
+                            case .contentGrew:
+                                if request.animated {
+                                    scrollToBottom(reader, animated: true)
+                                } else {
+                                    requestScrollToBottom()
+                                }
+                            case .restored, .runTerminal:
+                                requestScrollToBottom()
+                            }
+                        }
+                        // The model mirrors the observer's bottom state so the
+                        // button and the follow policy never disagree (P2 moves
+                        // this reporting into SwiftUI's own scroll geometry).
+                        .onChange(of: isConversationAtBottom) { _, atBottom in
+                            scrollModel.reportAtBottom(atBottom)
+                        }
                         .onChange(of: mothx.messagesBySession[sessionID] ?? []) { _, _ in
                             // While a saved conversation is being restored, the
                             // message dictionary is populated before the turns
@@ -243,23 +271,18 @@ struct WorkspaceView: View {
                             // anchor the viewport against partial content, so
                             // defer to the single scroll issued at the end of
                             // the restore.
-                            guard !isRestoringConversation else { return }
-                            requestScrollToBottom()
+                            scrollModel.contentDidChange(animated: false)
                         }
                         .onChange(of: currentTurns.count) { _, _ in
                             // The initial history request completes after the
                             // ScrollView has appeared. Re-apply the bottom
-                            // position after the turn list is committed. This
-                            // must go through the AppKit-level observer: it
-                            // forces the LazyVStack layout first, so a restored
-                            // session never opens on a blank viewport until the
-                            // user nudges the scrollbar.
-                            guard !isRestoringConversation else { return }
-                            requestScrollToBottom()
+                            // position after the turn list is committed so a
+                            // restored session never opens on a blank viewport.
+                            scrollModel.contentDidChange(animated: false)
                         }
                         .onChange(of: mothx.thinkingBySession[sessionID] ?? "") { _, _ in
                             if mothx.runSessionID == sessionID, mothx.isRunning {
-                                scrollToBottom(reader, animated: true)
+                                scrollModel.contentDidChange(animated: true)
                             }
                         }
                         .onChange(of: mothx.runStatus) { _, _ in
@@ -268,29 +291,29 @@ struct WorkspaceView: View {
                             if terminalStatuses.contains((mothx.runStatus ?? "").lowercased()) {
                                 logScroll("runTerminal", "status=\(mothx.runStatus ?? "nil") turns=\(currentTurns.count)")
                                 conversationLayoutID += 1
-                                requestScrollToBottom()
+                                scrollModel.requireJump(.runTerminal)
                             } else if mothx.isRunning {
-                                scrollToBottom(reader, animated: true)
+                                scrollModel.contentDidChange(animated: true)
                             }
                         }
                         .onChange(of: mothx.isRunning) { wasRunning, isRunning in
                             guard mothx.runSessionID == sessionID, wasRunning, !isRunning else { return }
                             // The final transcript can be shorter than the
-                            // streaming projection. Re-anchor after the
-                            // terminal layout has committed so the old clip
-                            // origin cannot leave a blank viewport.
+                            // streaming projection. Re-anchor after the terminal
+                            // layout has committed so the old clip origin cannot
+                            // leave a blank viewport.
                             logScroll("runIdle", "turns=\(currentTurns.count)")
                             conversationLayoutID += 1
-                            requestScrollToBottom()
+                            scrollModel.requireJump(.runTerminal)
                         }
                         .onChange(of: reviewedChanges == nil) { _, isClosed in
                             conversationLayoutID += 1
                             guard isClosed, conversationWasAtBottomBeforeReview else { return }
                             logScroll("reviewClosed")
-                            requestScrollToBottom()
+                            scrollModel.requireJump(.userRequested, animated: true)
                         }
                         .onAppear {
-                            requestScrollToBottom()
+                            scrollModel.requireJump(.userRequested)
                         }
                         .overlay {
                             // While a saved conversation is being restored the
@@ -340,16 +363,10 @@ struct WorkspaceView: View {
                         .overlay(alignment: .bottom) {
                             if !isConversationAtBottom {
                                 ConversationScrollButton(isRunning: mothx.runSessionID == sessionID && mothx.isRunning) {
-                                    // Hide immediately for an explicit user
-                                    // request. The observer will turn it back
-                                    // on if layout growth leaves us more than
-                                    // 50pt from the actual document bottom.
-                                    isConversationAtBottom = true
-                                    scrollToBottom(reader, animated: true)
-                                    // Also ask the AppKit observer to settle at
-                                    // the actual document bottom after SwiftUI
-                                    // finishes the animated layout pass.
-                                    requestScrollToBottom()
+                                    // Ask the model first so the intent is
+                                    // recorded even if the observer's landing
+                                    // pass declines to report it back.
+                                    scrollModel.pinToBottom()
                                 }
                                 .padding(.bottom, 12)
                             }
@@ -436,6 +453,10 @@ struct WorkspaceView: View {
             sessionRestoreGeneration += 1
             let restoreGeneration = sessionRestoreGeneration
             isRestoringConversation = true
+            // Tell the scroll model a new conversation is loading: geometry and
+            // content growth must not flip the follow intent until the restore
+            // commits its content.
+            scrollModel.beginConversationReset()
             // Tell the scroll observer a new conversation is loading. It parks
             // the viewport at the top and drops the previous session's retry
             // state so no stale offset or in-flight bottom-follow can render a
@@ -533,7 +554,8 @@ struct WorkspaceView: View {
                 isRestoringConversation = false
                 conversationLayoutID += 1
                 logScroll("restoreEnd", "turns=\(currentTurns.count)")
-                requestScrollToBottom()
+                scrollModel.endConversationReset()
+                scrollModel.requireJump(.restored, force: true)
                 prefetchPreviewCache()
             }
         }
@@ -1063,7 +1085,7 @@ struct WorkspaceView: View {
             try? await Task.sleep(for: .milliseconds(250))
             guard !Task.isCancelled else { return }
             logScroll("submit")
-            requestScrollToBottom()
+            scrollModel.pinToBottom()
         }
         let submittedAttachments = attachments
         let imageAttachments = submittedAttachments.compactMap(\.dataURL)
