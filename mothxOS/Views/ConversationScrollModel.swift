@@ -18,10 +18,19 @@ struct ConversationScrollRequest: Equatable {
         case contentGrew
         /// The user asked for the bottom (button, composer submit).
         case userRequested
+        /// A historical turn was picked from the turn menu; position at its top.
+        case turnSelected
+    }
+
+    /// Which end of the content the viewport should land on.
+    enum Anchor: String, Equatable {
+        case top
+        case bottom
     }
 
     var revision = 0
     var reason: Reason = .contentGrew
+    var anchor: Anchor = .bottom
     var animated = false
 }
 
@@ -125,36 +134,55 @@ final class ConversationScrollModel: ObservableObject {
 
     // MARK: - Intents
 
-    /// The transcript changed (streamed chunk, new turn, expanded content).
+    /// The transcript changed (streamed chunk, new turn, turn body committed).
     func contentDidChange(animated: Bool) {
         guard followBottom, !isSuppressed else { return }
-        enqueue(.contentGrew, animated: animated)
+        enqueue(.contentGrew, anchor: .bottom, animated: animated)
     }
 
     /// A structural jump: the restore finished, or the Run reached a terminal
     /// state. Only fires while the user is still following the bottom.
-    func requireJump(_ reason: ConversationScrollRequest.Reason, animated: Bool = false, force: Bool = false) {
+    func requireJump(
+        _ reason: ConversationScrollRequest.Reason,
+        anchor: ConversationScrollRequest.Anchor = .bottom,
+        animated: Bool = false,
+        force: Bool = false
+    ) {
         if force { followBottom = true }
         guard followBottom, !isSuppressed else { return }
-        enqueue(reason, animated: animated)
+        enqueue(reason, anchor: anchor, animated: animated)
     }
 
-    /// The user explicitly asked for the bottom (button, composer submit).
+    /// The user explicitly asked for the bottom (button, composer submit, turn
+    /// menu picking the newest turn).
     func pinToBottom(animated: Bool = true) {
         followBottom = true
         atBottom = true
         isSuppressed = false
-        enqueue(.userRequested, animated: animated)
+        enqueue(.userRequested, anchor: .bottom, animated: animated)
+    }
+
+    /// Show a historical turn from its beginning. A historical turn is not
+    /// streaming, so tracking the bottom is meaningless until the user asks
+    /// for the newest turn again.
+    func showTurnFromTop() {
+        isSuppressed = false
+        followBottom = false
+        enqueue(.turnSelected, anchor: .top, animated: false)
     }
 
     // MARK: - Private
 
-    private func enqueue(_ reason: ConversationScrollRequest.Reason, animated: Bool) {
-        request = ConversationScrollRequest(revision: request.revision &+ 1, reason: reason, animated: animated)
+    private func enqueue(
+        _ reason: ConversationScrollRequest.Reason,
+        anchor: ConversationScrollRequest.Anchor,
+        animated: Bool
+    ) {
+        request = ConversationScrollRequest(revision: request.revision &+ 1, reason: reason, anchor: anchor, animated: animated)
         // Metadata only: no transcript text, no user content.
         RuntimeLog.shared.write(
             "scroll",
-            "request reason=\(reason.rawValue) revision=\(request.revision) animated=\(animated) followBottom=\(followBottom) atBottom=\(atBottom)"
+            "request reason=\(reason.rawValue) anchor=\(anchor.rawValue) revision=\(request.revision) animated=\(animated) followBottom=\(followBottom) atBottom=\(atBottom)"
         )
     }
 }
@@ -324,15 +352,17 @@ extension View {
     /// Anchors the conversation to its bottom.
     ///
     /// `initialOffset` makes the first paint land at the bottom, so a restored
-    /// or switched conversation never opens off-screen; on macOS 15+
-    /// `sizeChanges` keeps it pinned while streamed content grows. Together they
-    /// replace the old “settle for N frames / retry for 4 seconds” heuristics.
+    /// or switched conversation never opens off-screen. On macOS 15+
+    /// `pinOnSizeChanges` additionally keeps the bottom pinned while streamed
+    /// content grows; it must be **off** while a historical turn is displayed,
+    /// otherwise the size change caused by its body committing would yank the
+    /// viewport to that turn's end instead of letting it be read from the top.
     @ViewBuilder
-    func conversationBottomAnchoring() -> some View {
+    func conversationBottomAnchoring(pinOnSizeChanges: Bool) -> some View {
         if #available(macOS 15.0, *) {
             self
                 .defaultScrollAnchor(.bottom, for: .initialOffset)
-                .defaultScrollAnchor(.bottom, for: .sizeChanges)
+                .defaultScrollAnchor(pinOnSizeChanges ? .bottom : nil, for: .sizeChanges)
         } else {
             defaultScrollAnchor(.bottom)
         }

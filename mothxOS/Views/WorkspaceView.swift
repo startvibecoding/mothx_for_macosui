@@ -32,10 +32,16 @@ struct WorkspaceView: View {
     @State private var currentTurns: [Turn] = []
     /// Owns the conversation's scroll intent (see SCROLL_DESIGN.md).
     @StateObject private var scrollModel = ConversationScrollModel()
-    @State private var expandedTurnIDs: Set<String> = []
     @State private var preparedTurnIDs: Set<String> = []
     @State private var preparingTurnID: String?
-    @State private var showAllHistory = false
+    /// Which turn the conversation shows. `nil` means the newest turn; any other
+    /// value pins the transcript to that historical turn, reachable through the
+    /// top-right turn menu. There is no per-turn expand/collapse any more.
+    @State private var selectedTurnID: String?
+    /// The newest turn id already shown for the current session, so a newly
+    /// started turn takes over the viewport (requirement: history moves into the
+    /// menu) without re-snapping on every streamed chunk.
+    @State private var lastSeenLatestTurnID: String?
     @State private var forkingMessageID: String?
     @State private var forkErrorMessage: String?
     @State private var reviewedChanges: MothxTurnChanges?
@@ -72,6 +78,7 @@ struct WorkspaceView: View {
     @State private var sessionRestoreGeneration = 0
 
     private let conversationBottomID = "conversation-bottom"
+    private let conversationTopID = "conversation-top"
 
     private var currentModels: [MothxModelConfig] {
         let provider = mothx.providers.first(where: { $0.id == selectedProviderID }) ?? mothx.providers.first(where: { $0.id == mothx.defaultProvider }) ?? mothx.providers.first
@@ -144,15 +151,20 @@ struct WorkspaceView: View {
                         ScrollViewReader { reader in
                         ScrollView {
                             LazyVStack(alignment: .leading, spacing: 6) {
-                                let visibleTurns = showAllHistory ? currentTurns : Array(currentTurns.suffix(3))
+                                // Top sentinel: a historical turn is read from
+                                // its beginning, so "show turn" targets this.
+                                Color.clear
+                                    .frame(height: 1)
+                                    .id(conversationTopID)
 
+                                // Exactly one turn lives in the transcript tree:
+                                // the newest by default, or the historical turn
+                                // picked from the top-right menu.
                                 ForEach(visibleTurns) { turn in
                                     TurnBlock(
                                         turn: turn,
                                         sessionID: sessionID,
-                                        isExpanded: expandedTurnIDs.contains(turn.id),
                                         isContentReady: preparedTurnIDs.contains(turn.id),
-                                        onToggle: { toggleTurn(turn) },
                                         onFork: { message in fork(from: message) },
                                         forkingMessageID: forkingMessageID,
                                         onReviewChanges: presentReview,
@@ -195,11 +207,14 @@ struct WorkspaceView: View {
                             .frame(maxWidth: .infinity)
                         }
                         .coordinateSpace(name: "conversation-scroll")
-                        // Anchor the first paint (and, on macOS 15+, every
-                        // content-size change) to the bottom, so a restored or
-                        // switched conversation opens at the bottom and a
-                        // streaming reply stays pinned without any settle loop.
-                        .conversationBottomAnchoring()
+                        // Anchor the first paint (and, while the newest turn is
+                        // displayed, every content-size change) to the bottom, so
+                        // a restored or switched conversation opens at the bottom
+                        // and a streaming reply stays pinned without any settle
+                        // loop. Reading a historical turn clears the size-change
+                        // anchor so its body committing cannot yank the viewport
+                        // to that turn's end.
+                        .conversationBottomAnchoring(pinOnSizeChanges: isViewingLatestTurn)
                         // Bottom detection and positioning both belong to
                         // SwiftUI now: `onScrollGeometryChange` (+ scroll phase)
                         // on macOS 15, a read-only AppKit probe on macOS 14.
@@ -213,12 +228,11 @@ struct WorkspaceView: View {
                             await performScrollRequest(reader)
                         }
                         .onChange(of: mothx.messagesBySession[sessionID] ?? []) { _, _ in
-                            // While a saved conversation is being restored, the
-                            // message dictionary is populated before the turns
-                            // are computed and collapsed. A scroll here would
-                            // anchor the viewport against partial content, so
-                            // defer to the single scroll issued at the end of
-                            // the restore.
+                            // While a saved conversation is being restored the
+                            // model is suppressed, and while a historical turn is
+                            // displayed the transcript must not follow the live
+                            // stream: both gates live in the model.
+                            guard isViewingLatestTurn else { return }
                             scrollModel.contentDidChange(animated: false)
                         }
                         .onChange(of: currentTurns.count) { _, _ in
@@ -226,9 +240,11 @@ struct WorkspaceView: View {
                             // ScrollView has appeared. Re-pin the bottom once
                             // the turn list is committed so a restored session
                             // never opens on a blank viewport.
+                            guard isViewingLatestTurn else { return }
                             scrollModel.contentDidChange(animated: false)
                         }
                         .onChange(of: mothx.thinkingBySession[sessionID] ?? "") { _, _ in
+                            guard isViewingLatestTurn else { return }
                             if mothx.runSessionID == sessionID, mothx.isRunning {
                                 scrollModel.contentDidChange(animated: true)
                             }
@@ -277,13 +293,20 @@ struct WorkspaceView: View {
                             }
                         }
                         .overlay(alignment: .topTrailing) {
-                            if currentTurns.count > 3 {
-                                Button {
-                                    withAnimation(.easeInOut(duration: 0.2)) {
-                                        showAllHistory.toggle()
-                                        if let lastID = currentTurns.last?.id {
-                                            expandedTurnIDs = [lastID]
-                                            Task { await prepareTurn(lastID) }
+                            // Every turn except the displayed one lives here, in
+                            // time order (newest first), so the conversation
+                            // itself never renders more than one turn.
+                            if currentTurns.count > 1 {
+                                Menu {
+                                    ForEach(Array(currentTurns.reversed())) { turn in
+                                        Button {
+                                            selectTurn(turn)
+                                        } label: {
+                                            if displayedTurn?.id == turn.id {
+                                                Label(turnMenuTitle(turn), systemImage: "checkmark")
+                                            } else {
+                                                Text(turnMenuTitle(turn))
+                                            }
                                         }
                                     }
                                 } label: {
@@ -292,18 +315,46 @@ struct WorkspaceView: View {
                                         .frame(width: 34, height: 30)
                                         .contentShape(RoundedRectangle(cornerRadius: 8))
                                 }
-                                .buttonStyle(.plain)
+                                .menuStyle(.borderlessButton)
+                                .menuIndicator(.hidden)
+                                .fixedSize()
                                 .foregroundStyle(.secondary)
                                 .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 8))
                                 .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color.primary.opacity(0.12), lineWidth: 1))
                                 .shadow(color: .black.opacity(0.12), radius: 5, y: 2)
                                 .padding(.top, 10)
                                 .padding(.trailing, 18)
-                                .help(showAllHistory ? "隐藏历史对话 / Hide history" : "显示历史对话 / Show history")
+                                .help(c.turnHistoryHelp)
+                            }
+                        }
+                        .overlay(alignment: .topLeading) {
+                            // Reading an older turn: one click returns to the
+                            // newest one (and re-enters the live stream).
+                            if !isViewingLatestTurn {
+                                Button {
+                                    if let latest = currentTurns.last { selectTurn(latest) }
+                                } label: {
+                                    Label(c.backToLatestTurn, systemImage: "arrow.down.to.line")
+                                        .font(.caption.weight(.medium))
+                                        .padding(.horizontal, 10)
+                                        .padding(.vertical, 6)
+                                        .contentShape(Capsule())
+                                }
+                                .buttonStyle(.plain)
+                                .foregroundStyle(.secondary)
+                                .background(.regularMaterial, in: Capsule())
+                                .overlay(Capsule().stroke(Color.primary.opacity(0.12), lineWidth: 1))
+                                .shadow(color: .black.opacity(0.12), radius: 5, y: 2)
+                                .padding(.top, 10)
+                                .padding(.leading, 18)
+                                .help(c.backToLatestTurn)
                             }
                         }
                         .overlay(alignment: .bottom) {
-                            if !scrollModel.atBottom {
+                            // The round button jumps to the end of the live
+                            // conversation; when reading history the pill above
+                            // is the way back, so this one is hidden.
+                            if !scrollModel.atBottom, isViewingLatestTurn {
                                 ConversationScrollButton(isRunning: mothx.runSessionID == sessionID && mothx.isRunning) {
                                     // Ask the model first so the intent is
                                     // recorded even if the observer's landing
@@ -410,10 +461,10 @@ struct WorkspaceView: View {
                 // loading, and the final scroll lands against this session's
                 // own collapsed layout.
                 currentTurns = []
-                expandedTurnIDs = []
+                selectedTurnID = nil
+                lastSeenLatestTurnID = nil
                 preparedTurnIDs = []
                 preparingTurnID = nil
-                showAllHistory = false
                 imageGenerationMenuOpen = false
                 imageGenerationSelection = nil
                 selectedMode = ["plan", "agent", "yolo"].contains(mothx.defaultMode) ? mothx.defaultMode : "agent"
@@ -457,16 +508,18 @@ struct WorkspaceView: View {
                 currentTurns = await computeTurnsAsync(mothx.messagesBySession[sessionID] ?? [])
                 guard !Task.isCancelled else { return }
                 mothx.recordRuntimeLog("workspace", "session ready id=\(sessionID) messages=\(mothx.messagesBySession[sessionID]?.count ?? 0) turns=\(currentTurns.count)")
-                showAllHistory = false
-                expandedTurnIDs = currentTurns.last.map { [$0.id] } ?? []
+                // A restored conversation shows its newest turn; every earlier
+                // turn is reachable through the top-right menu.
+                selectedTurnID = nil
+                lastSeenLatestTurnID = currentTurns.last?.id
                 preparedTurnIDs = []
                 preparingTurnID = nil
                 if let lastID = currentTurns.last?.id {
-                    // Restore ordering: the expanded turn's real content must
-                    // replace the loading placeholder before the viewport is
-                    // positioned, otherwise the scroll lands against a
-                    // placeholder-height document and the restored session
-                    // opens off the true conversation bottom.
+                    // Restore ordering: the turn's real content must replace the
+                    // loading placeholder before the viewport is positioned,
+                    // otherwise the scroll lands against a placeholder-height
+                    // document and the restored session opens off the true
+                    // conversation bottom.
                     await prepareTurn(lastID)
                 }
                 guard !Task.isCancelled else { return }
@@ -512,10 +565,18 @@ struct WorkspaceView: View {
                 guard generation == turnsRecomputeGeneration, !Task.isCancelled else { return }
                 currentTurns = turns
                 mothx.recordRuntimeLog("workspace", "turns recomputed session=\(sessionID) messages=\(messages.count) turns=\(turns.count) elapsedMs=\(Int(Date().timeIntervalSince(started) * 1000))")
-                if turns.count <= 3 { showAllHistory = false }
-                // Keep last turn expanded, preserve other expanded
+                // A newly started turn takes over the view: every earlier turn
+                // becomes reachable through the top-right menu only.
+                let latestID = turns.last?.id
+                if latestID != lastSeenLatestTurnID {
+                    lastSeenLatestTurnID = latestID
+                    selectedTurnID = nil
+                } else if let current = selectedTurnID, !turns.contains(where: { $0.id == current }) {
+                    // The selected turn left the loaded window: fall back to the
+                    // newest turn instead of showing nothing.
+                    selectedTurnID = nil
+                }
                 if let lastID = turns.last?.id {
-                    expandedTurnIDs.insert(lastID)
                     Task { await prepareTurn(lastID) }
                 }
             }
@@ -629,28 +690,33 @@ struct WorkspaceView: View {
         let request = scrollModel.request
         // Synchronous prefix. A newer request restarts this `.task`, but the
         // restart cannot interrupt code that has no suspension point, so the
-        // follow scroll can never be starved by a fast stream of updates.
-        scrollToBottom(reader, animated: request.animated)
+        // scroll can never be starved by a fast stream of updates.
+        scrollToAnchor(reader, request.anchor, animated: request.animated)
         // One bounded re-issue after the layout pass, for the case where the
         // lazy stack had not committed its height yet. Best effort: a newer
         // request may cancel it, and that request re-scrolls itself. No settle
         // loops, timers or height arithmetic.
         await awaitMainRunLoopTurn()
         guard !Task.isCancelled else { return }
-        scrollToBottom(reader, animated: false)
+        scrollToAnchor(reader, request.anchor, animated: false)
     }
 
     private func logRunTerminal() {
         logScroll("runTerminal", "status=\(mothx.runStatus ?? "nil") turns=\(currentTurns.count)")
     }
 
-    /// The single programmatic positioning path. The bottom sentinel is the
-    /// anchor, so this always goes through SwiftUI's own scroll machinery and
-    /// never moves the clip view behind its back.
-    private func scrollToBottom(_ reader: ScrollViewProxy, animated: Bool) {
-        let action = {
-            reader.scrollTo(conversationBottomID, anchor: .bottom)
-        }
+    /// The single programmatic positioning path. It targets one of the two
+    /// sentinels (top of the displayed turn / bottom of the document), so it
+    /// always goes through SwiftUI's own scroll machinery and never moves the
+    /// clip view behind its back.
+    private func scrollToAnchor(
+        _ reader: ScrollViewProxy,
+        _ anchor: ConversationScrollRequest.Anchor,
+        animated: Bool
+    ) {
+        let target = anchor == .top ? conversationTopID : conversationBottomID
+        let position: UnitPoint = anchor == .top ? .top : .bottom
+        let action = { reader.scrollTo(target, anchor: position) }
         if animated {
             withAnimation(.easeOut(duration: 0.2), action)
         } else {
@@ -890,32 +956,62 @@ struct WorkspaceView: View {
             }
     }
 
-    // MARK: - Turn accordion
+    // MARK: - Turn navigation
 
-    private func toggleTurn(_ turn: Turn) {
-        mothx.recordRuntimeLog("turn", "toggle id=\(turn.id) index=\(turn.index) expanded=\(expandedTurnIDs.contains(turn.id)) results=\(turn.resultMessages.count) tools=\(turn.toolSummaries.count)")
-        if expandedTurnIDs.contains(turn.id) {
-            expandedTurnIDs.remove(turn.id)
-            preparedTurnIDs.remove(turn.id)
-            if preparingTurnID == turn.id { preparingTurnID = nil }
+    /// The turn the conversation is showing: the explicitly selected one, or the
+    /// newest turn. A stale selection (its turn left the loaded window) falls
+    /// back to the newest, so the conversation is never empty.
+    private var displayedTurn: Turn? {
+        if let selectedTurnID, let match = currentTurns.first(where: { $0.id == selectedTurnID }) {
+            return match
+        }
+        return currentTurns.last
+    }
+
+    private var isViewingLatestTurn: Bool {
+        displayedTurn?.id == currentTurns.last?.id
+    }
+
+    /// Exactly one turn is exposed to the transcript tree; every other turn is
+    /// reachable through the top-right menu.
+    private var visibleTurns: [Turn] {
+        displayedTurn.map { [$0] } ?? []
+    }
+
+    /// Menu label for one turn: its number, the first non-empty line of the
+    /// user's message (the turn's natural title) and, for the newest turn, a
+    /// marker. Truncation is left to the menu.
+    private func turnMenuTitle(_ turn: Turn) -> String {
+        let copy = languageStore.copy
+        let firstLine = turn.userMessage.content
+            .components(separatedBy: .newlines)
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .first { !$0.isEmpty }
+        let fallback = turn.isAnchorless ? copy.turnEarlierContent : copy.turnUntitled
+        let badge = turn.id == currentTurns.last?.id ? "  · \(copy.latestTurnBadge)" : ""
+        return "#\(turn.index + 1) \(firstLine ?? fallback)\(badge)"
+    }
+
+    /// Shows one turn. Picking the newest turn returns to the live conversation;
+    /// any other turn stops following the stream and is read from its top.
+    private func selectTurn(_ turn: Turn) {
+        let isLatest = turn.id == currentTurns.last?.id
+        mothx.recordRuntimeLog("turn", "select id=\(turn.id) index=\(turn.index) latest=\(isLatest) results=\(turn.resultMessages.count) tools=\(turn.toolSummaries.count)")
+        selectedTurnID = isLatest ? nil : turn.id
+        // Prepare on first visit (placeholder → body, so the body is built
+        // against committed content); a revisited turn is already ready.
+        Task { await prepareTurn(turn.id) }
+        if isLatest {
+            scrollModel.pinToBottom(animated: false)
         } else {
-            // Expand this turn, collapse all other non-last turns
-            var newIDs = expandedTurnIDs
-            if let lastID = currentTurns.last?.id, turn.id != lastID {
-                // Keep last turn expanded, remove other expanded turns
-                newIDs = [lastID]
-            }
-            newIDs.insert(turn.id)
-            expandedTurnIDs = newIDs
-            Task { await prepareTurn(turn.id) }
+            scrollModel.showTurnFromTop()
         }
     }
 
     /// Give SwiftUI one layout pass to display the loading placeholder before
     /// exposing a potentially very large turn to the lazy conversation stack.
-    /// Once ready, the entire expanded turn is present before scrollbar input
-    /// can request another portion of it. Awaitable so session restore can
-    /// hold the scrollbar position until the content is actually present.
+    /// Awaitable so session restore can hold the viewport until the content is
+    /// actually present.
     @discardableResult
     private func prepareTurn(_ turnID: String) async -> Bool {
         guard !preparedTurnIDs.contains(turnID), preparingTurnID != turnID else {
@@ -924,12 +1020,16 @@ struct WorkspaceView: View {
         preparingTurnID = turnID
         await Task.yield()
         await Task.yield()
-        guard expandedTurnIDs.contains(turnID) else {
+        guard displayedTurn?.id == turnID else {
             if preparingTurnID == turnID { preparingTurnID = nil }
             return false
         }
         preparedTurnIDs.insert(turnID)
         if preparingTurnID == turnID { preparingTurnID = nil }
+        // The body just replaced the placeholder, which changed the document
+        // height: re-pin when following the newest turn (a no-op for a
+        // historical turn, which intentionally is not followed).
+        scrollModel.contentDidChange(animated: false)
         return true
     }
 
@@ -1014,12 +1114,13 @@ struct WorkspaceView: View {
             return
         }
         let generationSelection = imageGenerationSelection
-        // Submission starts a new turn. Collapse every turn that already
-        // belongs to this session; the incoming local user message will form
-        // a new last turn and the message observer will expand that one only.
+        // Submission starts a new turn: drop the prepared bodies and make sure
+        // the newest turn is the one on screen (history stays in the menu).
         withAnimation(.easeInOut(duration: 0.2)) {
-            expandedTurnIDs.removeAll()
-            preparedTurnIDs.removeAll()
+            selectedTurnID = nil
+            // Keep the turn that stays on screen ready so submitting never
+            // flashes the loading placeholder; drop every other body.
+            preparedTurnIDs = currentTurns.last.map { [$0.id] } ?? []
             preparingTurnID = nil
         }
         // Re-pin immediately. The size-change anchor keeps the bottom while the

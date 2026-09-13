@@ -569,6 +569,11 @@ struct Copy {
     var addSkillFailedPrefix: (String) -> String { { detail in self.text("添加技能失败：\(detail)", "Failed to add skill: \(detail)") } }
     var scrollRunningHelp: String { text("正在输出，滚动到底部", "Streaming output, scroll to bottom") }
     var scrollBottomHelp: String { text("滚动到底部", "Scroll to bottom") }
+    var turnHistoryHelp: String { text("历史轮次：选择要查看的一轮", "Past turns: choose one to view") }
+    var backToLatestTurn: String { text("回到最新轮次", "Back to latest turn") }
+    var latestTurnBadge: String { text("最新", "Latest") }
+    var turnUntitled: String { text("（无标题）", "(untitled)") }
+    var turnEarlierContent: String { text("（更早的内容）", "(earlier content)") }
 
     // MARK: - Service manager errors
     var runtimeNotFound: String { text("未找到系统安装的 mothx 命令，请先执行 npm install -g mothx-installer", "mothx command not found on this system. Run npm install -g mothx-installer first.") }

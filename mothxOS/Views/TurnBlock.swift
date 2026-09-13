@@ -232,12 +232,10 @@ struct TurnBlock: View {
     @EnvironmentObject private var languageStore: LanguageStore
     let turn: Turn
     let sessionID: String
-    let isExpanded: Bool
-    /// Expanded turns are prepared before their body is exposed to the
-    /// scrolling container. This prevents LazyVStack from constructing a
-    /// large transcript while the user is dragging the scrollbar.
+    /// The body is prepared before it is exposed to the scrolling container, so
+    /// switching to a very large turn never builds its whole transcript inside
+    /// the same update that selected it.
     let isContentReady: Bool
-    let onToggle: () -> Void
     /// Called when the user asks to fork from a completed assistant response.
     var onFork: ((MothxMessage) -> Void)? = nil
     var forkingMessageID: String? = nil
@@ -403,62 +401,48 @@ struct TurnBlock: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            // An anchorless turn (a mid-turn server window) has no user message
-            // to title the accordion row with, so render its content directly.
-            if !turn.isAnchorless {
-                Button(action: onToggle) {
-                    HStack(spacing: 8) {
-                        Image(systemName: isExpanded ? "chevron.down" : "chevron.right")
-                            .font(.caption2).foregroundStyle(.tertiary)
-                        Text(turn.userMessage.content)
-                            .font(.subheadline).foregroundStyle(.primary).lineLimit(1)
-                        Spacer()
+            // A conversation shows exactly one turn, so there is no accordion
+            // any more: the whole turn is always rendered. The only gate is the
+            // content-ready pass, which keeps a very large turn out of the same
+            // update that switched to it.
+            if isContentReady {
+                VStack(alignment: .leading, spacing: 10) {
+                    // An anchorless turn (a mid-turn server window) has no user
+                    // message of its own; render its content directly.
+                    if !turn.isAnchorless {
+                        MessageBubble(
+                            message: turn.userMessage,
+                            isCurrentRunning: false,
+                            onFork: forkAction,
+                            isForking: forkingMessageID == forkableAssistantMessage?.id,
+                            onPreviewImage: onPreviewImage
+                        )
                     }
-                    .padding(.vertical, 8).padding(.horizontal, 2)
-                    .contentShape(Rectangle())
+                    if turn.hasResponded { agentResponseBlock }
+                    // Show status for the last turn before the agent responds,
+                    // so the user sees elapsed time while waiting.
+                    if turn.isLast, isCurrentRunSession, let status = mothx.runStatus, !turn.hasResponded {
+                        StatusInline(
+                            status: status,
+                            elapsed: mothx.runElapsed,
+                            error: mothx.runError,
+                            thinking: isRunActive ? mothx.thinkingBySession[sessionID] : nil,
+                            allowsExpansion: isRunActive
+                        )
+                    }
                 }
-                .buttonStyle(.plain)
-            }
-
-            if isExpanded || turn.isAnchorless {
-                if isContentReady {
-                    VStack(alignment: .leading, spacing: 10) {
-                        if !turn.isAnchorless {
-                            MessageBubble(
-                                message: turn.userMessage,
-                                isCurrentRunning: false,
-                                onFork: forkAction,
-                                isForking: forkingMessageID == forkableAssistantMessage?.id,
-                                onPreviewImage: onPreviewImage
-                            )
-                        }
-                        if turn.hasResponded { agentResponseBlock }
-                        // Show status for the last turn before the agent responds,
-                        // so the user sees elapsed time while waiting.
-                        if turn.isLast, isCurrentRunSession, let status = mothx.runStatus, !turn.hasResponded {
-                            StatusInline(
-                                status: status,
-                                elapsed: mothx.runElapsed,
-                                error: mothx.runError,
-                                thinking: isRunActive ? mothx.thinkingBySession[sessionID] : nil,
-                                allowsExpansion: isRunActive
-                            )
-                        }
-                    }
-                    .padding(.leading, 12)
-                    .transition(.opacity.combined(with: .move(edge: .top)))
-                } else {
-                    HStack(spacing: 8) {
-                        ProgressView()
-                            .controlSize(.small)
-                        Text("加载中… / Loading…")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
-                    .padding(.leading, 12)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(.vertical, 18)
+                .padding(.leading, 12)
+            } else {
+                HStack(spacing: 8) {
+                    ProgressView()
+                        .controlSize(.small)
+                    Text("加载中… / Loading…")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
                 }
+                .padding(.leading, 12)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.vertical, 18)
             }
         }
         .padding(.vertical, 4)
