@@ -49,6 +49,7 @@ struct TeamWorkspaceView: View {
             if let readOnlySessionID {
                 WorkspaceView(
                     prompt: .constant(""),
+                    attachments: .constant([]),
                     sessionID: readOnlySessionID,
                     readOnly: true
                 )

@@ -1,72 +1,59 @@
 import Foundation
 import AppKit
 
-/// Installs and manages the Computer Use MCP server (方案 B).
+/// Computer Use — app-wide, single-switch.
 ///
-/// The server bundle resource (`Resources/ComputerUse/server.js`) is copied to
-/// `~/Library/Application Support/mothx/computer-use/server.js` and registered
-/// in the project's `.mothx/mcp.json` (via the existing project-scoped MCP
-/// API) with `MOTHX_CU_WORKDIR` pointing at the project workDir, so both the
-/// serve and ACP transports pick it up automatically (mothx >= the version
-/// that natively merges global + project MCP config).
+/// The capability is NOT a per-project MCP server any more. It is delivered by
+/// two things that already exist in the runtime:
 ///
-/// This type owns no state beyond what the UI reads; every operation is
-/// explicit so the Settings section can show a live status panel.
+///   1. macOS permissions this Mac grants to *this application* — Screen
+///      Recording (screenshots) and Accessibility (simulated input). That is
+///      the only thing the Settings switch is responsible for.
+///   2. A global skill (`~/.mothx/skills/computer-use/SKILL.md`) that teaches
+///      the agent the screenshot → read(image) → click/type → screenshot loop
+///      using the built-in `bash` + `read` tools.
+///
+/// Because it rides on the standard tools, every session can use it in any
+/// project: `yolo` runs the actions automatically, `agent`/`plan` ask for the
+/// user's approval through the existing tool-approval flow, all decided by the
+/// model from the prompt.
 @MainActor
 final class MothxComputerUse {
-    /// The MCP server name registered in `mcp.json` (tool prefix `mcp_computer_`).
-    static let serverName = "computer"
-    static let envWorkDirKey = "MOTHX_CU_WORKDIR"
+    /// Directory name under `~/.mothx/skills` (must match the app's global
+    /// skill root so the app-side Skills list and mothx agree).
+    static let skillName = "computer-use"
 
-    // MARK: - Paths
+    // MARK: - Skill install / remove
 
-    /// `~/Library/Application Support/mothx/computer-use/` — where the server
-    /// script lives. Keep this in sync with where mothx resolves its own data
-    /// directory (the app-owned `mothx serve` runs with that cwd).
-    static var installDirectory: URL {
-        let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
-            ?? FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Application Support", isDirectory: true)
-        return base.appendingPathComponent("mothx/computer-use", isDirectory: true)
+    /// Default global skill root (`~/.mothx/skills`), used when mothx settings
+    /// do not override `skillsDir`.
+    static var defaultSkillsRoot: String {
+        FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent(".mothx/skills", isDirectory: true)
+            .path
     }
 
-    static var serverFileURL: URL {
-        installDirectory.appendingPathComponent("server.js")
+    static func skillFileURL(inRoot root: String) -> URL {
+        URL(fileURLWithPath: root)
+            .appendingPathComponent(skillName, isDirectory: true)
+            .appendingPathComponent("SKILL.md")
     }
 
-    /// The bundle ships the server under `Resources/ComputerUse/server.js`.
-    /// Because the Xcode file-system-synchronized group flattens resources
-    /// into `Contents/Resources/`, always resolve via `Bundle.main.url(forResource:)`
-    /// rather than constructing a directory path.
-    static func bundledServerURL() -> URL? {
-        Bundle.main.url(forResource: "server", withExtension: "js")
+    static func skillInstalled(inRoot root: String) -> Bool {
+        FileManager.default.fileExists(atPath: skillFileURL(inRoot: root).path)
     }
 
-    /// Version marker parsed from the top of the server script (`// VERSION: N`).
-    static func serverVersion(at url: URL) -> String? {
-        guard let data = try? String(contentsOf: url, encoding: .utf8) else { return nil }
-        let prefix = data.prefix(200)
-        if let range = prefix.range(of: #"VERSION:\s*(\d+)"#, options: .regularExpression) {
-            let line = prefix[range]
-            if let number = line.split(separator: ":").last?.trimmingCharacters(in: .whitespaces) {
-                return number
-            }
-        }
-        return nil
+    /// Writes the bundled recipe so the agent can drive the desktop. Idempotent.
+    static func installSkill(inRoot root: String) throws {
+        let fm = FileManager.default
+        let fileURL = skillFileURL(inRoot: root)
+        try fm.createDirectory(at: fileURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try skillMarkdown.write(to: fileURL, atomically: true, encoding: .utf8)
     }
 
-    // MARK: - Node resolution
-
-    /// Resolves the node executable the same way the app resolves mothx:
-    /// through an interactive login shell, so nvm/homebrew PATH entries are
-    /// honored. Returns nil when node is missing (the UI then routes to the
-    /// existing environment-check onboarding).
-    static func resolvedNodeExecutable() async -> URL? {
-        guard let path = await MothxServiceManager.shellCapturedPath("which node"),
-              !path.isEmpty,
-              FileManager.default.isExecutableFile(atPath: path) else {
-            return nil
-        }
-        return URL(fileURLWithPath: path)
+    /// Removes the recipe so the agent stops reaching for the desktop.
+    static func removeSkill(inRoot root: String) {
+        try? FileManager.default.removeItem(at: skillFileURL(inRoot: root).deletingLastPathComponent())
     }
 
     // MARK: - Permission probes (observational, never prompts)
@@ -155,6 +142,15 @@ final class MothxComputerUse {
         }
     }
 
+    /// Runs both probes. On first use these trigger the macOS permission
+    /// prompts for this application (Screen Recording and Accessibility); when
+    /// the user declined earlier, the system shows nothing and we return
+    /// `.denied`, which the UI turns into a "open System Settings" affordance.
+    static func requestPermissions() async {
+        _ = probeScreenRecording()
+        _ = probeAccessibility()
+    }
+
     /// Opens the matching System Settings privacy pane.
     static func openPrivacyPane(screenRecording: Bool) {
         let urlString = screenRecording
@@ -168,113 +164,108 @@ final class MothxComputerUse {
     // MARK: - Status
 
     struct Status {
-        var serverInstalled = false
-        var installedVersion: String?
-        var bundledVersion: String?
-        var nodeFound = false
-        var nodePath: String?
         var screenRecording: PermissionState = .unknown
         var accessibility: PermissionState = .unknown
-        var shotsDirectoryExists = false
-        var configuredInProject = false
+        var skillInstalled = false
 
-        var installedIsCurrent: Bool {
-            guard let installedVersion, let bundledVersion else { return false }
-            return installedVersion == bundledVersion
-        }
+        var allGranted: Bool { screenRecording == .ok && accessibility == .ok }
     }
 
-    /// Reads the current on-disk / configured state without mutating anything.
-    static func status(workDir: String, projectServers: [MothxMCPServer]) async -> Status {
+    /// Reads the current permission + skill state without mutating anything.
+    static func currentStatus(inRoot root: String) async -> Status {
         var status = Status()
-        let fm = FileManager.default
-        status.serverInstalled = fm.fileExists(atPath: serverFileURL.path)
-        status.installedVersion = status.serverInstalled ? serverVersion(at: serverFileURL) : nil
-        if let bundled = bundledServerURL() {
-            status.bundledVersion = serverVersion(at: bundled)
-        }
-        status.nodeFound = await resolvedNodeExecutable() != nil
-        if status.nodeFound {
-            status.nodePath = await MothxServiceManager.shellCapturedPath("which node")
-        }
         status.screenRecording = probeScreenRecording()
         status.accessibility = probeAccessibility()
-        let shots = URL(fileURLWithPath: workDir).appendingPathComponent(".mothx/computer-use", isDirectory: true)
-        status.shotsDirectoryExists = fm.fileExists(atPath: shots.path)
-        status.configuredInProject = projectServers.contains { $0.name == serverName }
+        status.skillInstalled = skillInstalled(inRoot: root)
         return status
     }
 
-    // MARK: - Install / uninstall
+    // MARK: - Skill content
 
-    /// Installs the bundled server script (only when the installed version
-    /// differs, so a running server's file handle is not replaced) and upserts
-    /// the `computer` entry in the project's `.mothx/mcp.json`, preserving all
-    /// other entries and fields (including the newer `enabled` boolean).
-    static func install(workDir: String, projectServers: [MothxMCPServer], saveServers: ([MothxMCPServer]) async throws -> [MothxMCPServer]) async throws -> [MothxMCPServer] {
-        let fm = FileManager.default
-        try fm.createDirectory(at: installDirectory, withIntermediateDirectories: true)
+    /// Recipes for the screenshot → read → act loop. Written verbatim to
+    /// `~/.mothx/skills/computer-use/SKILL.md`.
+    static let skillMarkdown = #"""
+    # Computer Use — 操作本机桌面
 
-        guard let bundled = bundledServerURL() else {
-            throw MothxComputerUseError.bundleMissing
-        }
-        let installedVersion = fm.fileExists(atPath: serverFileURL.path) ? serverVersion(at: serverFileURL) : nil
-        let bundledVersion = serverVersion(at: bundled)
-        if !fm.fileExists(atPath: serverFileURL.path) || installedVersion != bundledVersion {
-            if fm.fileExists(atPath: serverFileURL.path) { try? fm.removeItem(at: serverFileURL) }
-            try fm.copyItem(at: bundled, to: serverFileURL)
-        }
+    当用户要求「截个图看看 / 看看屏幕上是什么 / 帮我点一下 / 输入… / 打开某个 App 操作」等
+    本机桌面操作时使用本技能。用 **bash 截图 → read 看图 → bash 操作 → 再截图确认** 的循环完成。
 
-        let workDirAbsolute = URL(fileURLWithPath: workDir).standardizedFileURL.path
-        var entry = MothxMCPServer()
-        entry.name = Self.serverName
-        entry.type = MothxMCPServer.stdioType
-        entry.command = "node"
-        entry.args = [serverFileURL.path]
-        entry.env = [MothxMCPPair(name: Self.envWorkDirKey, value: workDirAbsolute)]
-        entry.enabled = true
+    前置条件：App「设置 → 电脑控制」开关已打开，且本应用已获得 macOS 的
+    **屏幕录制** 与 **辅助功能** 权限。若截图报权限错误（`could not create image` / `-1719`），
+    停下来告诉用户去开关里授权，不要反复重试。
 
-        var servers = projectServers
-        if let index = servers.firstIndex(where: { $0.name == Self.serverName }) {
-            // Preserve the existing entry's transport fields, but refresh the
-            // command/env so a moved workDir or updated script path applies.
-            var existing = servers[index]
-            existing.command = entry.command
-            existing.args = entry.args
-            existing.env = entry.env
-            existing.enabled = true
-            servers[index] = existing
-        } else {
-            servers.append(entry)
-        }
-        return try await saveServers(servers)
-    }
+    运行模式决定执行方式：`yolo` 直接执行；`agent` 的每次 bash 都会先请你（用户）授权；
+    `plan` 只读，不能真正操作。
 
-    /// Removes the `computer` entry from the project's `.mothx/mcp.json`.
-    /// Screenshots and the installed script are kept unless the user asks for
-    /// a full cleanup.
-    static func uninstall(projectServers: [MothxMCPServer], saveServers: ([MothxMCPServer]) async throws -> [MothxMCPServer]) async throws -> [MothxMCPServer] {
-        let servers = projectServers.filter { $0.name != Self.serverName }
-        return try await saveServers(servers)
-    }
+    ## 1. 观察：截图
 
-    /// Deletes the installed script (used by "彻底清理"). Screenshots under
-    /// the project stay untouched.
-    static func removeInstalledServer() {
-        try? FileManager.default.removeItem(at: serverFileURL)
-    }
-}
+    ```bash
+    mkdir -p .mothx/computer-use
+    screencapture -x -o .mothx/computer-use/shot-001.png
+    ```
 
-enum MothxComputerUseError: LocalizedError {
-    case bundleMissing
-    case notConnected
+    然后把图片当作图像读进来（不要只看文字）：
 
-    var errorDescription: String? {
-        switch self {
-        case .bundleMissing:
-            return "找不到内置的 computer-use server.js 资源（构建可能不完整）。"
-        case .notConnected:
-            return "尚未连接 mothx 服务。"
-        }
-    }
+    `read(path=".mothx/computer-use/shot-001.png", imageMode="detail")`
+
+    截图固定落在会话工作目录的 `.mothx/computer-use/`（已在 `.gitignore` 中忽略）。
+
+    ## 2. 坐标换算（最容易出错的地方）
+
+    `screencapture` 输出的是**像素**，而点击使用的是屏幕**点（points）**。先求比例：
+
+    ```bash
+    sips -g pixelWidth -g pixelHeight .mothx/computer-use/shot-001.png
+    osascript -e 'tell application "Finder" to get bounds of window of desktop'
+    ```
+
+    `scale = 像素宽 / 桌面 bounds 宽度`（Retina 通常为 2）。
+    **点击点 = 截图里的像素坐标 ÷ scale**，否则会偏到两倍位置。
+
+    多显示器：全屏截图会把所有屏幕拼在一张图里；比例不一致时不要用全屏图算坐标，
+    改用区域截图 `-R x,y,w,h`（points，主屏坐标系）只截目标区域。
+
+    ## 3. 操作（坐标单位：屏幕点）
+
+    ```bash
+    # 左键单击
+    osascript -e 'tell application "System Events" to click at {x, y}'
+
+    # 键入 ASCII 文本
+    osascript -e 'tell application "System Events" to keystroke "hello"'
+
+    # 键入中文/非 ASCII：走剪贴板再粘贴
+    printf '%s' '你好' | pbcopy
+    osascript -e 'tell application "System Events" to keystroke "v" using command down'
+
+    # 按键（key code：return=36, escape=53, tab=48, space=49, delete=51）
+    osascript -e 'tell application "System Events" to key code 36'
+
+    # 组合键（例如 ⌘S）
+    osascript -e 'tell application "System Events" to keystroke "s" using command down'
+
+    # 激活某个应用
+    osascript -e 'tell application "Safari" to activate'
+
+    # 当前前台应用
+    osascript -e 'tell application "System Events" to get name of every process whose background only is false'
+
+    # 某应用的窗口 {名称, 位置, 尺寸}（points）
+    osascript -e 'tell application "System Events" to tell process "Safari" to get {name, position, size} of every window'
+    ```
+
+    安装了 `cliclick`（`brew install cliclick`，可选）时可用：
+    `cliclick c:x,y` 单击、`dc:x,y` 双击、`rc:x,y` 右键、`m:x,y` 移动、`dd:x,y du:x,y` 拖拽。
+
+    ## 4. 确认
+
+    每个动作之后都**重新截图并 read 查看**，用新画面确认结果，不要凭想象宣布成功。
+    需要让用户看到某张图时，调用 `publish_artifact .mothx/computer-use/shot-NNN.png`。
+
+    ## 边界
+
+    - 只操作本机桌面，不做远程/云端。
+    - 截图可能包含密钥或隐私：只放在 `.mothx/computer-use/`，绝不上传或写进日志。
+    - 用户随时可以用「停止」中断本次运行。
+    """#
 }

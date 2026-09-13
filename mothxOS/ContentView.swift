@@ -10,6 +10,12 @@ struct ContentView: View {
     @State private var selectedSessionID: String?
     @State private var selectedTeamProjectID: String?
     @State private var prompt = ""
+    /// Composer attachments per session, keyed by session ID ("" = no session).
+    /// Kept here (not in WorkspaceView) so pasted images survive the Settings
+    /// ↔ workspace toggle without being re-pasted. The strip is cleared
+    /// automatically once a message is submitted (see `submit()`), and can
+    /// still be trimmed early with the per-item ✕.
+    @State private var attachmentsBySession: [String: [ComposerAttachment]] = [:]
     @State private var showSettings = false
     @State private var selectedProjectID: String?
     @State private var showNewProject = false
@@ -33,6 +39,7 @@ struct ContentView: View {
         } else {
             WorkspaceView(
                 prompt: $prompt,
+                attachments: workspaceAttachments,
                 sessionID: selectedSessionID,
                 onSessionActivated: { session in
                     // A successful server-side fork is only possible when
@@ -46,6 +53,15 @@ struct ContentView: View {
                 }
             )
         }
+    }
+
+    /// Resolves the attachment list for the currently selected session.
+    private var workspaceAttachments: Binding<[ComposerAttachment]> {
+        let key = selectedSessionID ?? ""
+        return Binding(
+            get: { attachmentsBySession[key] ?? [] },
+            set: { attachmentsBySession[key] = $0 }
+        )
     }
 
     private var languageStoreCopy: Copy { languageStore.copy }

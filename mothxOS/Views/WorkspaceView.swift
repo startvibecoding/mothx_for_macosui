@@ -11,6 +11,7 @@ struct WorkspaceView: View {
     @EnvironmentObject private var mothx: MothxServiceManager
     @EnvironmentObject private var languageStore: LanguageStore
     @Binding var prompt: String
+    @Binding var attachments: [ComposerAttachment]
     let sessionID: String?
     /// Displays the conversation without exposing run controls or the prompt
     /// composer. Used for the read-only session tabs inside team tasks.
@@ -18,7 +19,6 @@ struct WorkspaceView: View {
     /// Called after a fork creates a child session so the owner (ContentView)
     /// can switch the workspace to the new session.
     var onSessionActivated: ((MothxSession) -> Void)? = nil
-    @State private var attachments: [ComposerAttachment] = []
     @State private var selectedMode = "agent"
     @State private var selectedProviderID = ""
     @State private var selectedModelID = ""
@@ -1260,7 +1260,16 @@ struct WorkspaceView: View {
         let selectedTools = Array(selectedTools).sorted()
         let selectedSkills = Array(selectedSkills).sorted()
         let workDir = mothx.workDir(for: sessionID)
-        prompt = ""; attachments = []
+        prompt = ""
+        // Sending is the commit point: the attachments have already been
+        // captured above (and pasted/selected images are saved into the
+        // working directory), so clear the composer strip here rather than
+        // making the user dismiss each one with the per-item ✕.
+        if !attachments.isEmpty {
+            withAnimation(.easeInOut(duration: 0.15)) {
+                attachments = []
+            }
+        }
         mothx.setSessionProvider(selectedProvider, for: sessionID)
         mothx.setSessionModel(selectedModel, for: sessionID)
         Task {
@@ -1372,6 +1381,10 @@ struct WorkspaceView: View {
         }
     }
 
+    /// Pasting a screenshot (⌘V) is equivalent to saving the image into the
+    /// session's working directory: the PNG lands at `<workDir>/screenshot-…png`
+    /// so the agent can open it with the built-in `read` tool, and it is also
+    /// attached to the message for the usual multimodal/vision routing.
     private func addPastedImage(_ image: NSImage) {
         guard let tiffData = image.tiffRepresentation,
               let bitmap = NSBitmapImageRep(data: tiffData),
@@ -1382,16 +1395,30 @@ struct WorkspaceView: View {
             )
             return
         }
-        let temporaryURL = FileManager.default.temporaryDirectory
-            .appendingPathComponent("mothx-pasted-\(UUID().uuidString).png")
+        let directory = mothx.workDir(for: sessionID ?? "")
+        guard !directory.isEmpty else {
+            attachmentError = languageStore.copy.noWorkDirForAttachment
+            return
+        }
+        let workDirURL = URL(fileURLWithPath: directory, isDirectory: true)
+        let stamp = Self.screenshotTimestampFormatter.string(from: Date())
+        let proposed = workDirURL.appendingPathComponent("screenshot-\(stamp).png")
+        let destination = uniqueDestination(for: proposed, in: workDirURL)
         do {
-            try pngData.write(to: temporaryURL, options: .atomic)
-            addAttachmentFiles([temporaryURL])
-            try? FileManager.default.removeItem(at: temporaryURL)
+            try pngData.write(to: destination, options: .atomic)
+            let dataURL = try imageDataURL(for: destination)
+            attachments.append(ComposerAttachment(name: destination.lastPathComponent, path: destination.path, dataURL: dataURL))
         } catch {
             attachmentError = languageStore.copy.addAttachmentFailedPrefix(error.localizedDescription)
         }
     }
+
+    private static let screenshotTimestampFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.dateFormat = "yyyyMMdd-HHmmss"
+        return formatter
+    }()
 
     private func isImageURL(_ url: URL) -> Bool {
         ["png", "jpg", "jpeg", "gif", "webp", "heic", "tif", "tiff"]
@@ -1801,13 +1828,45 @@ struct PromptComposer: View {
         let c = languageStore.copy
         return VStack(spacing: 0) {
             if !attachments.isEmpty {
-                HStack(spacing: 8) {
-                    Text(c.attachmentsCountLabel(attachments.count)).font(.caption).foregroundStyle(.secondary)
-                    Text(attachments.map(\.name).joined(separator: "、")).font(.caption).foregroundStyle(.tertiary).lineLimit(1)
-                    Spacer()
-                    Button { attachments.removeAll() } label: { Image(systemName: "xmark") }
-                        .buttonStyle(.plain).hoverHighlight().help(c.helpClearAttachments)
-                }.padding(.horizontal, 12).padding(.top, 10)
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 6) {
+                        Text(c.attachmentsCountLabel(attachments.count))
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .fixedSize()
+                        ForEach(attachments) { attachment in
+                            HStack(spacing: 4) {
+                                if let preview = thumbnail(from: attachment.dataURL) {
+                                    Image(nsImage: preview)
+                                        .resizable()
+                                        .scaledToFill()
+                                        .frame(width: 28, height: 28)
+                                        .clipShape(RoundedRectangle(cornerRadius: 4))
+                                }
+                                Text(attachment.name)
+                                    .font(.caption)
+                                    .foregroundStyle(.primary)
+                                    .lineLimit(1)
+                                Button {
+                                    withAnimation(.easeInOut(duration: 0.15)) {
+                                        attachments.removeAll { $0.id == attachment.id }
+                                    }
+                                } label: {
+                                    Image(systemName: "xmark.circle.fill").foregroundStyle(.secondary)
+                                }
+                                .buttonStyle(.plain)
+                                .hoverHighlight()
+                                .help(c.helpRemoveAttachment)
+                            }
+                            .padding(.leading, 6)
+                            .padding(.trailing, 4)
+                            .padding(.vertical, 3)
+                            .background(Color.secondary.opacity(0.08), in: Capsule())
+                        }
+                    }
+                    .padding(.horizontal, 12)
+                    .padding(.top, 10)
+                }
             }
             RetSubmitTextEditor(text: $prompt, placeholder: promptPlaceholder, isRunning: isRunning, onPasteImage: onPasteImage, onSubmit: submit)
                 .frame(height: editorHeight)
@@ -2017,6 +2076,15 @@ struct PromptComposer: View {
                 .zIndex(10)
             }
         }
+    }
+
+    /// Decodes the `data:image/…;base64,…` payload into a small chip preview.
+    private func thumbnail(from dataURL: String?) -> NSImage? {
+        guard let dataURL,
+              let comma = dataURL.firstIndex(of: ",") else { return nil }
+        let base64 = dataURL[dataURL.index(after: comma)...]
+        guard let data = Data(base64Encoded: String(base64)) else { return nil }
+        return NSImage(data: data)
     }
 
     private var composerBackground: Color {
@@ -2330,13 +2398,49 @@ private struct RetSubmitTextEditor: NSViewRepresentable {
 private final class PasteAwareTextView: NSTextView {
     var onPasteImage: ((NSImage) -> Void)?
 
+    /// A screenshot on the pasteboard is pure image data (no text). `NSText`
+    /// only advertises text-ish readable types, so its Edit ▸ Paste validation
+    /// fails and ⌘V does nothing at all — `paste(_:)` below is never reached.
+    /// Advertising the image types keeps the menu item enabled.
+    override var readablePasteboardTypes: [NSPasteboard.PasteboardType] {
+        var types = super.readablePasteboardTypes
+        for type in [NSPasteboard.PasteboardType.tiff, .png] where !types.contains(type) {
+            types.append(type)
+        }
+        return types
+    }
+
+    override func validateUserInterfaceItem(_ item: NSValidatedUserInterfaceItem) -> Bool {
+        if item.action == #selector(NSText.paste(_:)), Self.imageFromPasteboard() != nil {
+            return true
+        }
+        return super.validateUserInterfaceItem(item)
+    }
+
     override func paste(_ sender: Any?) {
+        // Only intercept pure-image clipboards (a screenshot). If the clipboard
+        // also carries text/URL content, leave the normal text paste alone.
         let pasteboard = NSPasteboard.general
-        if pasteboard.canReadObject(forClasses: [NSImage.self], options: nil),
-           let image = NSImage(pasteboard: pasteboard) {
+        let textish: [NSPasteboard.PasteboardType] = [.string, .rtf, .rtfd, .html, .fileURL]
+        if pasteboard.availableType(from: textish) == nil,
+           let image = Self.imageFromPasteboard() {
             onPasteImage?(image)
             return
         }
         super.paste(sender)
+    }
+
+    /// Reads an image off the general pasteboard. Screenshots can arrive as
+    /// TIFF or PNG, so try the object reader first and the raw data second.
+    private static func imageFromPasteboard() -> NSImage? {
+        let pasteboard = NSPasteboard.general
+        if pasteboard.canReadObject(forClasses: [NSImage.self], options: nil),
+           let image = NSImage(pasteboard: pasteboard) {
+            return image
+        }
+        if let data = pasteboard.data(forType: .tiff) ?? pasteboard.data(forType: .png) {
+            return NSImage(data: data)
+        }
+        return nil
     }
 }

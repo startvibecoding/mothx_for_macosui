@@ -397,41 +397,30 @@ struct Copy {
     // MARK: - Computer Use
 
     var computerUse: String { text("电脑控制", "Computer Use") }
-    var computerUseSubtitle: String { text("让 Agent 通过截图与鼠标键盘操作本机桌面", "Let the agent operate the local desktop via screenshots and mouse/keyboard") }
-    var selectProject: String { text("选择项目", "Select project") }
-    var computerUseEnable: String { text("为本项目启用 Computer Use", "Enable Computer Use for this project") }
-    var computerUseEnableHint: String { text("启用后 Agent 会自动操作本机鼠标键盘且无需逐次确认，请随时用「停止」中断。", "Once enabled, the agent can drive your mouse and keyboard without asking each time. Use Stop to interrupt at any moment.") }
-    var computerUseInstalling: String { text("安装中…", "Installing…") }
-    var computerUseUninstalling: String { text("卸载中…", "Uninstalling…") }
-    var computerUseInstalled: String { text("已启用（新会话生效）", "Enabled (takes effect on new sessions)") }
-    var computerUseNotInstalled: String { text("未启用", "Not enabled") }
-    var computerUseStatus: String { text("状态", "Status") }
-    var computerUseNodeMissing: String { text("未找到 Node.js，请先完成环境检查中的 Node 安装。", "Node.js not found. Complete the Node install in Environment Check first.") }
-    var computerUseServerVersion: String { text("服务器版本", "Server version") }
-    var computerUseOutdated: String { text("有新版本待安装", "A new version is available") }
+    var computerUseSubtitle: String { text("内置方案（不依赖 MCP）：用 bash + read 操作本机桌面，作为 MCP computer use 的备案", "Built-in fallback (no MCP): drives the desktop with bash + read; use when the MCP computer use is unavailable") }
+    var computerUseAllow: String { text("允许电脑控制", "Allow Computer Use") }
+    var computerUseOn: String { text("已开启（新会话生效）", "On (takes effect on new sessions)") }
+    var computerUseOff: String { text("未开启", "Off") }
+    var computerUseAllowHint: String { text("此开关只负责让本应用获得 macOS 的「屏幕录制」与「辅助功能」授权。授权后，所有会话都能按提示词使用电脑控制：yolo 模式自动执行，agent / plan 模式先向你请示。若你已用可显示画面的 MCP computer use，请关闭本开关，只让 MCP 参与工作。", "This switch only grants the app Screen Recording and Accessibility. Once granted, every session can drive the desktop from the prompt: yolo runs automatically, while agent / plan ask you first. If you already use an MCP computer use that can show screenshots, turn this off and let the MCP take over.") }
+    var computerUsePermissionTitle: String { text("系统权限", "System permissions") }
     var computerUseScreenRecording: String { text("屏幕录制", "Screen Recording") }
     var computerUseAccessibility: String { text("辅助功能", "Accessibility") }
     var computerUsePermissionOK: String { text("已授权", "Granted") }
     var computerUsePermissionDenied: String { text("未授权", "Not granted") }
     var computerUsePermissionUnknown: String { text("未知", "Unknown") }
+    var computerUseNeedPermission: String { text("尚未获得全部权限：请在下方打开对应系统设置并勾选本应用。", "Permissions are incomplete: open the matching System Settings below and enable this app.") }
     var computerUseOpenScreenRecordingSettings: String { text("打开屏幕录制设置", "Open Screen Recording settings") }
     var computerUseOpenAccessibilitySettings: String { text("打开辅助功能设置", "Open Accessibility settings") }
     var computerUseRecheck: String { text("重新检测", "Re-check") }
-    var computerUseShotsDir: String { text("截图目录", "Screenshots directory") }
-    var computerUseShotsDirExists: String { text("已生成（.mothx/computer-use/）", "Present (.mothx/computer-use/)") }
-    var computerUseShotsDirMissing: String { text("尚无截图（首次截图后生成）", "None yet (created on first screenshot)") }
-    var computerUseProjectNoSession: String { text("该项目还没有会话，请先发起一次对话再启用。", "This project has no session yet. Start a conversation first.") }
-    var computerUseNeedNewSession: String { text("已为本项目启用；新会话生效（当前会话可能仍不可用）。", "Enabled for this project; takes effect on new sessions (the current session may still be unavailable).") }
-    var computerUseErrorTitle: String { text("Computer Use 操作失败", "Computer Use failed") }
-    var computerUseConflict: String { text("项目 mcp.json 已存在名为 computer 的条目，请先在 MCP 配置中重命名或删除它。", "The project mcp.json already has an entry named computer. Rename or remove it in the MCP settings first.") }
-    var computerUseFullCleanup: String { text("彻底清理（删除已安装的 server.js）", "Full cleanup (delete the installed server.js)") }
-    var computerUseCleaned: String { text("已清理", "Cleaned up") }
+    var computerUseEnabledNotice: String { text("已开启，并已写入 computer-use 技能；新会话生效。", "Enabled; the computer-use skill was written and takes effect on new sessions.") }
+    var computerUseDisabledNotice: String { text("已关闭，并已移除 computer-use 技能。", "Disabled; the computer-use skill was removed.") }
+    var computerUseErrorTitle: String { text("电脑控制操作失败", "Computer Use failed") }
 
     // MARK: - About
     var about: String { text("关于软件", "About") }
     var advancedSettings: String { text("高级设置", "Advanced settings") }
     var advancedSettingsSubtitle: String { text("打开 mothx WebUI 的高级设置页面", "Open mothx WebUI advanced settings") }
-    var openAdvancedSettings: String { text("打开高级设置", "Open advanced settings") }
+    var openAdvancedSettings: String { text("打开web 版配置", "Open web config") }
     var reuseExistingService: String { text("启动时复用已有 mothx 服务", "Reuse existing mothx service at launch") }
     var reuseExistingServiceSubtitle: String { text("开启后，启动 mothxOS 时不会删除 7872 端口上已运行的服务，适合本地开发和联调。", "When enabled, mothxOS keeps the service already running on port 7872. Useful for local development and integration testing.") }
     var reuseExistingServiceToggle: String { text("复用已有服务", "Reuse existing service") }
@@ -567,7 +556,7 @@ struct Copy {
     var helpSelectMode: String { text("选择运行模式：plan / agent / yolo", "Choose the run mode: plan / agent / yolo") }
     var helpSelectProvider: String { text("选择运营商", "Choose the provider") }
     var helpSelectModel: String { text("选择模型", "Choose the model") }
-    var helpClearAttachments: String { text("清空附件", "Clear attachments") }
+    var helpRemoveAttachment: String { text("移除该附件", "Remove this attachment") }
     var helpBack: String { text("返回", "Back") }
     var helpClearSearch: String { text("清除搜索内容", "Clear the search") }
     var helpPreviousPage: String { text("上一页", "Previous page") }
