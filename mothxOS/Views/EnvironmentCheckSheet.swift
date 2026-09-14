@@ -27,6 +27,9 @@ struct EnvironmentCheckSheet: View {
     @EnvironmentObject private var languageStore: LanguageStore
     @EnvironmentObject private var mothx: MothxServiceManager
     @Binding var isPresented: Bool
+    /// 发现同步数据 / 会话库异常时，交回上层打开「数据检查与修复」模式。
+    var onOpenRepair: (String) -> Void = { _ in }
+    @AppStorage("mothxOS.autoBackupOnLaunch") private var autoBackupOnLaunch = true
 
     @State private var phase: Phase = .checking
     @State private var nodeState: CheckState = .pending
@@ -358,13 +361,47 @@ struct EnvironmentCheckSheet: View {
             languageStore.adoptServerSettingIfNeeded(mothx.tuilang)
         }
         await mothx.loadWorkspace()
-        if mothx.workspaceSyncState == .passed {
-            phase = .allPassed
-            try? await Task.sleep(for: .seconds(2))
-            isPresented = false
-        } else {
+
+        // 同步数据出问题 → 打开数据检查与修复模式（先尝试从备份恢复）
+        guard mothx.workspaceSyncState == .passed else {
             phase = .failed(languageStore.copy.envCheckSyncFailed)
+            onOpenRepair(languageStore.copy.dataLaunchReasonSyncFailed)
+            return
         }
+
+        // 同步通过，但会话库本身已损坏 / 缺失 → 同样进入修复模式
+        let repairURL = SessionDBRepair.sessionDatabaseURL(configuredDir: mothx.sessionDir)
+        let health = await Task.detached(priority: .userInitiated) {
+            SessionDBRepair.healthCheck(databaseURL: repairURL)
+        }.value
+        switch health.verdict {
+        case .corrupted:
+            phase = .failed(languageStore.copy.envCheckSyncFailed)
+            onOpenRepair(languageStore.copy.dataLaunchReasonCorrupt)
+            return
+        case .missing:
+            // 全新安装（还没有任何数据）不用打扰用户；有备份才提示可恢复。
+            let hasBackups = !SessionDBRepair.listBackups(backupDir: SessionDBRepair.backupDirectory()).isEmpty
+            if hasBackups {
+                phase = .failed(languageStore.copy.envCheckSyncFailed)
+                onOpenRepair(languageStore.copy.dataLaunchReasonMissing)
+                return
+            }
+        case .healthy, .residue:
+            break
+        }
+
+        // 数据正常 → 启动后自动备份会话库（一致性快照，后台静默执行）
+        if autoBackupOnLaunch {
+            let backupDir = SessionDBRepair.backupDirectory()
+            Task.detached(priority: .utility) {
+                _ = try? SessionDBRepair.backupNow(databaseURL: repairURL, backupDir: backupDir)
+            }
+        }
+
+        phase = .allPassed
+        try? await Task.sleep(for: .seconds(2))
+        isPresented = false
     }
 
     private static func commandExists(_ command: String) async -> Bool {

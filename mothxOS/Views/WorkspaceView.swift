@@ -113,7 +113,10 @@ struct WorkspaceView: View {
                 Text(mothx.sessions.first(where: { $0.id == sessionID })?.title ?? c.workspace)
                     .font(.system(size: 14, weight: .medium))
                 Spacer()
-                CurrentDirectoryMenu(path: currentWorkDir)
+                CurrentDirectoryMenu(path: currentWorkDir) { newPath in
+                    guard let sessionID else { return }
+                    Task { await mothx.setSessionWorkDir(sessionID: sessionID, workDir: newPath) }
+                }
                     // The sidebar toggle is overlaid against the window's
                     // trailing edge. Reserve its slot while the sidebar
                     // is closed so it never covers the directory menu.
@@ -1605,6 +1608,10 @@ struct CurrentDirectoryMenu: View {
     @Environment(\.colorScheme) private var colorScheme
     @EnvironmentObject private var languageStore: LanguageStore
     let path: String
+    /// Called with the newly selected directory when the user taps “更换”.
+    /// The owning workspace view persists it on the session (see
+    /// `MothxServiceManager.setSessionWorkDir`). When nil the button is hidden.
+    var onChangeDirectory: ((String) -> Void)? = nil
     @State private var isPresented = false
     @State private var applications: [DirectoryApplication] = []
     @State private var applicationsReady = false
@@ -1671,7 +1678,15 @@ struct CurrentDirectoryMenu: View {
         .popover(isPresented: $isPresented, arrowEdge: .top) {
             VStack(alignment: .leading, spacing: 8) {
                 Text(directoryName).font(.headline)
-                Text(path).font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                HStack(spacing: 8) {
+                    Text(path.isEmpty ? languageStore.copy.noWorkDir : path)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                    Spacer(minLength: 0)
+                    changeDirectoryButton
+                }
                 Divider()
                 if applications.isEmpty {
                     Text(languageStore.copy.noAppsForDirectory).foregroundStyle(.secondary).padding(.vertical, 10)
@@ -1693,8 +1708,44 @@ struct CurrentDirectoryMenu: View {
                         }
                     }.frame(maxHeight: 360)
                 }
-            }.padding(14).frame(width: 270)
+            }.padding(14).frame(width: 280)
         }
+    }
+
+    /// “更换” button pinned to the right of the directory path. Only shown
+    /// when the workspace view supplies a change handler.
+    @ViewBuilder
+    private var changeDirectoryButton: some View {
+        if let onChangeDirectory {
+            Button {
+                isPresented = false
+                chooseNewDirectory(onChangeDirectory)
+            } label: {
+                Label(languageStore.copy.changeWorkDirectory, systemImage: "arrow.triangle.2.circlepath")
+                    .font(.caption)
+            }
+            .buttonStyle(.plain)
+            .foregroundStyle(.tint)
+            .hoverHighlight()
+            .help(languageStore.copy.helpChangeWorkDirectory(directoryName))
+        }
+    }
+
+    private func chooseNewDirectory(_ onChange: @escaping (String) -> Void) {
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = false
+        panel.canChooseDirectories = true
+        panel.allowsMultipleSelection = false
+        panel.canCreateDirectories = true
+        panel.message = languageStore.copy.chooseNewWorkDirectoryMessage
+        if !path.isEmpty {
+            let url = URL(fileURLWithPath: path, isDirectory: true)
+            if FileManager.default.fileExists(atPath: url.path) {
+                panel.directoryURL = url
+            }
+        }
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        onChange(url.path)
     }
 
     private func discoverApplications() -> [DirectoryApplication] {

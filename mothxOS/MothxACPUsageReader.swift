@@ -36,7 +36,14 @@ enum MothxACPUsageReader {
             return nil
         }
         defer { sqlite3_close(database) }
-        sqlite3_busy_timeout(database, 250)
+        sqlite3_busy_timeout(database, 5000)
+
+        // 只读自检：库若已因 TUI/App 并发写入损坏（详见 SessionDBGuard / docs），
+        // 直接放弃本次统计读取，避免把脏帧当数据；损坏恢复由
+        // tools/session_db_guard.sh recover 承担。
+        guard SessionDBGuard.quickCheck(database) else {
+            return nil
+        }
 
         guard let startSeq = turnStartSequence(database: database, sessionID: sessionID, runID: runID) else {
             return nil

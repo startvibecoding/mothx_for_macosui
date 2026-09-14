@@ -56,6 +56,8 @@ struct SettingsView: View {
                     MCPSection()
                 } else if section == "sessions" {
                     SessionsSection(sessionDir: $sessionDir, showSettings: $showSettings, selectedProjectID: $selectedProjectID, selectedSessionID: $selectedSessionID, pendingDeletion: $pendingDeletion)
+                } else if section == "data" {
+                    DataMaintenanceSection(mothx: mothx)
                 } else if section == "advanced" {
                     AdvancedSettingsSection()
                 } else {
@@ -179,7 +181,7 @@ struct SettingsNavigation: View {
     @Environment(\.colorScheme) private var colorScheme
     @EnvironmentObject private var languageStore: LanguageStore
     @Binding var section: String
-    var body: some View { let c = languageStore.copy; return VStack(alignment: .leading, spacing: 8) { Text(c.settings.uppercased()).sectionLabel().padding(.bottom, 10); SettingsNavItem(title: c.general, icon: "gearshape", id: "general", section: $section); SettingsNavItem(title: c.providers, icon: "server.rack", id: "providers", section: $section); SettingsNavItem(title: c.skills, icon: "sparkles", id: "skills", section: $section); SettingsNavItem(title: c.mcp, icon: "puzzlepiece.extension", id: "mcp", section: $section); SettingsNavItem(title: c.sessions, icon: "clock", id: "sessions", section: $section); SettingsNavItem(title: c.advancedSettings, icon: "wrench.and.screwdriver", id: "advanced", section: $section); Spacer() }.padding(22).frame(width: 230).background(colorScheme == .light ? .white : .codexSidebar) }
+    var body: some View { let c = languageStore.copy; return VStack(alignment: .leading, spacing: 8) { Text(c.settings.uppercased()).sectionLabel().padding(.bottom, 10); SettingsNavItem(title: c.general, icon: "gearshape", id: "general", section: $section); SettingsNavItem(title: c.providers, icon: "server.rack", id: "providers", section: $section); SettingsNavItem(title: c.skills, icon: "sparkles", id: "skills", section: $section); SettingsNavItem(title: c.mcp, icon: "puzzlepiece.extension", id: "mcp", section: $section); SettingsNavItem(title: c.sessions, icon: "clock", id: "sessions", section: $section); SettingsNavItem(title: c.dataRepair, icon: "externaldrive.badge.checkmark", id: "data", section: $section); SettingsNavItem(title: c.advancedSettings, icon: "wrench.and.screwdriver", id: "advanced", section: $section); Spacer() }.padding(22).frame(width: 230).background(colorScheme == .light ? .white : .codexSidebar) }
 }
 
 struct SettingsNavItem: View { let title: String; let icon: String; let id: String; @Binding var section: String
@@ -965,20 +967,108 @@ private struct MCPServerCard: View {
     }
 }
 
-/// Marketplace sheet backed by the official MCP Registry. Selecting a row
-/// converts it into a prefilled, editable server card in the settings list.
+private enum MCPMarketSource: String, CaseIterable, Identifiable {
+    case mcpMarket
+    case modelScope
+
+    var id: String { rawValue }
+}
+
+/// Localized label for a marketplace tab.
+private func mcpMarketSourceTitle(_ source: MCPMarketSource, copy: Copy) -> String {
+    switch source {
+    case .mcpMarket: return copy.mcpMarketTabMCPMarket
+    case .modelScope: return copy.mcpMarketTabModelScope
+    }
+}
+
+/// Normalized catalog row so both marketplaces reuse one layout and the
+/// "Add" action can dispatch back to the original entry.
+private struct MCPMarketRowItem: Identifiable {
+    let id: String
+    let title: String
+    let subtitle: String
+    let desc: String
+    let categories: [String]
+    let stars: Int
+    let logo: String
+    let entry: Entry
+
+    enum Entry {
+        case mcpMarket(MothxMCPMarketEntry)
+        case modelScope(MothxModelScopeMCPEntry)
+    }
+
+    static func from(_ item: MothxMCPMarketEntry) -> MCPMarketRowItem {
+        MCPMarketRowItem(
+            id: item.id,
+            title: item.alias.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? item.name : item.alias,
+            subtitle: {
+                var parts: [String] = []
+                if !item.name.isEmpty, item.name != (item.alias.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? item.name : item.alias) { parts.append(item.name) }
+                if !item.by.isEmpty { parts.append(item.by) }
+                return parts.joined(separator: " · ")
+            }(),
+            desc: item.description,
+            categories: Array(item.categories.prefix(3)),
+            stars: item.stars,
+            logo: item.logo,
+            entry: .mcpMarket(item)
+        )
+    }
+
+    static func from(_ item: MothxModelScopeMCPEntry) -> MCPMarketRowItem {
+        let displayName = item.chineseName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? item.name : item.chineseName
+        var subtitleParts: [String] = []
+        if !item.name.isEmpty, item.name != displayName { subtitleParts.append(item.name) }
+        if !item.fromSite.isEmpty { subtitleParts.append(item.fromSite) }
+        let desc = item.abstractCN.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? item.abstract : item.abstractCN
+        return MCPMarketRowItem(
+            id: String(item.id),
+            title: displayName,
+            subtitle: subtitleParts.joined(separator: " · "),
+            desc: desc,
+            categories: Array(item.category.prefix(3)),
+            stars: item.stars,
+            logo: item.fromSiteIcon,
+            entry: .modelScope(item)
+        )
+    }
+}
+
+/// Marketplace sheet with two tabs: the MCPMarket.cn catalog and the
+/// ModelScope MCP square. Selecting a row converts the installable config
+/// into a prefilled, editable server card in the settings list.
 private struct MCPMarketSheet: View {
     @Environment(\.dismiss) private var dismiss
     @EnvironmentObject private var mothx: MothxServiceManager
     @EnvironmentObject private var languageStore: LanguageStore
     let onAdd: (MothxMCPServer) -> Void
 
+    @State private var source: MCPMarketSource = .mcpMarket
     @State private var query = ""
-    @State private var items: [MothxMCPMarketServer] = []
-    @State private var cursor: String?
+    @State private var items: [MCPMarketRowItem] = []
+    @State private var page = 1
+    @State private var hasMore = false
+    @State private var total = 0
     @State private var isLoading = false
     @State private var errorMessage: String?
-    @State private var addedName: String?
+    @State private var addedID: String?
+    @State private var addingID: String?
+
+    private var currentSubtitle: String {
+        switch source {
+        case .mcpMarket: return languageStore.copy.mcpMarketSubtitle
+        case .modelScope: return languageStore.copy.mcpMarketModelScopeSubtitle
+        }
+    }
+
+    private var currentHint: String {
+        switch source {
+        case .mcpMarket: return languageStore.copy.mcpMarketHint
+        case .modelScope: return languageStore.copy.mcpMarketModelScopeHint
+        }
+    }
 
     var body: some View {
         let c = languageStore.copy
@@ -986,8 +1076,16 @@ private struct MCPMarketSheet: View {
             HStack(spacing: 12) {
                 VStack(alignment: .leading, spacing: 3) {
                     Text(c.mcpMarketTitle).font(.system(size: 20, weight: .semibold))
-                    Text(c.mcpMarketSubtitle).font(.caption).foregroundStyle(.secondary)
+                    Text(currentSubtitle).font(.caption).foregroundStyle(.secondary)
                 }
+                Picker(c.mcpMarketTab, selection: $source) {
+                    ForEach(MCPMarketSource.allCases) { s in
+                        Text(mcpMarketSourceTitle(s, copy: c)).tag(s)
+                    }
+                }
+                .labelsHidden()
+                .pickerStyle(.segmented)
+                .fixedSize()
                 Spacer()
                 TextField(c.mcpMarketSearchPlaceholder, text: $query)
                     .textFieldStyle(.roundedBorder)
@@ -1002,7 +1100,7 @@ private struct MCPMarketSheet: View {
             Divider()
 
             HStack(spacing: 8) {
-                Text(c.mcpMarketHint).font(.caption).foregroundStyle(.secondary)
+                Text(currentHint).font(.caption).foregroundStyle(.secondary)
                 Spacer()
                 if isLoading { ProgressView().controlSize(.small) }
             }
@@ -1020,8 +1118,12 @@ private struct MCPMarketSheet: View {
             } else {
                 ScrollView {
                     LazyVStack(spacing: 0) {
-                        ForEach(items, id: \.name) { item in
-                            MCPMarketRow(server: item, added: addedName == item.name) { add(item) }
+                        ForEach(items) { item in
+                            MCPMarketRow(
+                                server: item,
+                                added: addedID == item.id,
+                                isAdding: addingID == item.id
+                            ) { Task { await add(item) } }
                             Divider().padding(.leading, 16)
                         }
                     }
@@ -1032,9 +1134,9 @@ private struct MCPMarketSheet: View {
             HStack {
                 Button(c.mcpMarketLoadMore) { Task { await loadMore() } }
                     .buttonStyle(.bordered)
-                    .disabled(isLoading || cursor == nil)
+                    .disabled(isLoading || !hasMore)
                 Spacer()
-                Text(c.text("共 \(items.count) 个", "\(items.count) total"))
+                Text(c.text("共 \(total) 个服务器", "\(total) total"))
                     .font(.caption).foregroundStyle(.secondary)
             }
             .padding(12)
@@ -1052,89 +1154,128 @@ private struct MCPMarketSheet: View {
                 .background(Color.red.opacity(0.08))
             }
         }
-        .frame(minWidth: 720, minHeight: 560)
+        .frame(minWidth: 760, minHeight: 560)
+        .onChange(of: source) { _, _ in
+            query = ""
+            items = []
+            page = 1
+            hasMore = false
+            total = 0
+            addedID = nil
+            Task { await search() }
+        }
         .task { await search() }
     }
 
     private func search() async {
         isLoading = true
         errorMessage = nil
-        addedName = nil
+        addedID = nil
         do {
-            let response = try await mothx.searchMCPMarket(query: query)
-            items = response.servers.map(\.server)
-            cursor = response.metadata?.nextCursor
+            switch source {
+            case .mcpMarket:
+                let response = try await mothx.searchMCPMarket(query: query, page: 1)
+                items = response.servers.map { MCPMarketRowItem.from($0) }
+                page = 1
+                hasMore = response.currentPage < response.totalPages
+                total = response.totalServers
+            case .modelScope:
+                let result = try await mothx.searchModelScopeMCP(query: query, page: 1)
+                items = result.servers.map { MCPMarketRowItem.from($0) }
+                page = 1
+                hasMore = result.hasMore
+                total = result.total
+            }
         } catch {
             errorMessage = error.localizedDescription
             items = []
-            cursor = nil
+            hasMore = false
         }
         isLoading = false
     }
 
     private func loadMore() async {
-        guard let cursor, !isLoading else { return }
+        guard hasMore, !isLoading else { return }
         isLoading = true
         do {
-            let response = try await mothx.searchMCPMarket(query: query, cursor: cursor)
-            let existing = Set(items.map(\.name))
-            items.append(contentsOf: response.servers.map(\.server).filter { !existing.contains($0.name) })
-            self.cursor = response.metadata?.nextCursor
+            let next = page + 1
+            let existing = Set(items.map(\.id))
+            switch source {
+            case .mcpMarket:
+                let response = try await mothx.searchMCPMarket(query: query, page: next)
+                items.append(contentsOf: response.servers.map { MCPMarketRowItem.from($0) }.filter { !existing.contains($0.id) })
+                page = next
+                hasMore = response.currentPage < response.totalPages
+                total = response.totalServers
+            case .modelScope:
+                let result = try await mothx.searchModelScopeMCP(query: query, page: next)
+                items.append(contentsOf: result.servers.map { MCPMarketRowItem.from($0) }.filter { !existing.contains($0.id) })
+                page = next
+                hasMore = result.hasMore
+                total = result.total
+            }
         } catch {
             errorMessage = error.localizedDescription
         }
         isLoading = false
     }
 
-    private func add(_ item: MothxMCPMarketServer) {
-        guard let server = item.makeMCPServer() else {
-            errorMessage = languageStore.copy.mcpMarketUnsupported
-            return
+    private func add(_ item: MCPMarketRowItem) async {
+        guard addingID == nil else { return }
+        addingID = item.id
+        errorMessage = nil
+        defer { addingID = nil }
+        do {
+            var server: MothxMCPServer?
+            switch item.entry {
+            case .mcpMarket(let entry):
+                let detail = try await mothx.fetchMCPMarketDetail(id: entry.id)
+                server = detail.makeMCPServer()
+            case .modelScope(let entry):
+                server = entry.makeMCPServer()
+            }
+            guard let server else {
+                errorMessage = languageStore.copy.mcpMarketUnsupported
+                return
+            }
+            onAdd(server)
+            addedID = item.id
+        } catch {
+            errorMessage = error.localizedDescription
         }
-        onAdd(server)
-        addedName = item.name
     }
 }
 
 private struct MCPMarketRow: View {
     @EnvironmentObject private var languageStore: LanguageStore
-    let server: MothxMCPMarketServer
+    let server: MCPMarketRowItem
     let added: Bool
+    let isAdding: Bool
     let add: () -> Void
-
-    private var displayTitle: String {
-        if let title = server.title, !title.isEmpty { return title }
-        return server.suggestedName
-    }
-
-    private var transportLabels: [String] {
-        var labels = Set<String>()
-        for package in server.packages ?? [] {
-            if let type = package.registryType { labels.insert(type) }
-        }
-        for remote in server.remotes ?? [] {
-            if let type = remote.type { labels.insert(type) }
-        }
-        return labels.sorted()
-    }
 
     var body: some View {
         let c = languageStore.copy
         return HStack(alignment: .top, spacing: 12) {
+            logoView.frame(width: 36, height: 36)
             VStack(alignment: .leading, spacing: 4) {
                 HStack(spacing: 8) {
-                    Text(displayTitle).font(.system(size: 14, weight: .medium))
-                    if let version = server.version, !version.isEmpty {
-                        Text(version).font(.caption2).foregroundStyle(.secondary)
+                    Text(server.title).font(.system(size: 14, weight: .medium)).lineLimit(1)
+                    if server.stars > 0 {
+                        HStack(spacing: 3) {
+                            Image(systemName: "star.fill").font(.caption2).foregroundStyle(.orange)
+                            Text("\(server.stars)").font(.caption2).foregroundStyle(.secondary)
+                        }
                     }
                 }
-                Text(server.name).font(.caption2).foregroundStyle(.secondary)
-                if let description = server.description, !description.isEmpty {
-                    Text(description).font(.caption).foregroundStyle(.secondary).lineLimit(2)
+                if !server.subtitle.isEmpty {
+                    Text(server.subtitle).font(.caption2).foregroundStyle(.secondary).lineLimit(1)
                 }
-                if !transportLabels.isEmpty {
+                if !server.desc.isEmpty {
+                    Text(server.desc).font(.caption).foregroundStyle(.secondary).lineLimit(2)
+                }
+                if !server.categories.isEmpty {
                     HStack(spacing: 6) {
-                        ForEach(transportLabels, id: \.self) { label in
+                        ForEach(server.categories, id: \.self) { label in
                             Text(label).font(.caption2)
                                 .padding(.horizontal, 6).padding(.vertical, 2)
                                 .background(Color.primary.opacity(0.08))
@@ -1144,12 +1285,41 @@ private struct MCPMarketRow: View {
                 }
             }
             Spacer()
-            Button(added ? c.mcpMarketAddedLabel : c.mcpMarketAdd) { add() }
-                .buttonStyle(.bordered)
-                .disabled(added)
+            if isAdding {
+                ProgressView().controlSize(.small)
+            } else {
+                Button(added ? c.mcpMarketAddedLabel : c.mcpMarketAdd) { add() }
+                    .buttonStyle(.bordered)
+                    .disabled(added)
+            }
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 12)
+    }
+
+    @ViewBuilder private var logoView: some View {
+        let trimmed = server.logo.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.hasPrefix("http"), let url = URL(string: trimmed) {
+            AsyncImage(url: url) { phase in
+                switch phase {
+                case .success(let image):
+                    image.resizable().scaledToFill()
+                default:
+                    logoPlaceholder
+                }
+            }
+            .frame(width: 36, height: 36)
+            .clipShape(RoundedRectangle(cornerRadius: 6))
+        } else {
+            logoPlaceholder
+        }
+    }
+
+    private var logoPlaceholder: some View {
+        RoundedRectangle(cornerRadius: 6)
+            .fill(Color.primary.opacity(0.08))
+            .frame(width: 36, height: 36)
+            .overlay(Image(systemName: "shippingbox").font(.system(size: 14)).foregroundStyle(.secondary))
     }
 }
 
@@ -1406,6 +1576,237 @@ private struct AdvancedSettingsSection: View {
             }
             ComputerUseSection()
         }
+    }
+}
+/// 设置 → 数据与备份：会话库健康状态、一键备份、从备份恢复、常规修复与深度恢复。
+private struct DataMaintenanceSection: View {
+    @EnvironmentObject private var languageStore: LanguageStore
+    @StateObject private var model: SessionDBRepairModel
+    @AppStorage("mothxOS.autoBackupOnLaunch") private var autoBackupOnLaunch = true
+
+    @State private var confirmRestore: SessionDBBackup?
+    @State private var confirmRepair = false
+    @State private var confirmDeepRecover = false
+
+    init(mothx: MothxServiceManager) {
+        _model = StateObject(wrappedValue: SessionDBRepairModel(mothx: mothx))
+    }
+
+    private var c: Copy { languageStore.copy }
+
+    var body: some View {
+        let c = languageStore.copy
+        return VStack(alignment: .leading, spacing: 16) {
+            SettingsCard(title: c.dataRepairLongTitle, subtitle: c.dataRepairSubtitle) {
+                healthSummary
+                Divider().opacity(0.3)
+                Toggle(c.dataAutoBackupToggle, isOn: $autoBackupOnLaunch)
+                HStack(spacing: 8) {
+                    Button { Task { await model.backupNow() } } label: {
+                        Label(c.dataBackupNow, systemImage: "externaldrive.badge.plus")
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .tint(.orange)
+                    .disabled(model.busy)
+                    Button { model.refresh() } label: {
+                        Label(c.dataRecheck, systemImage: "arrow.clockwise")
+                    }
+                    .buttonStyle(.bordered)
+                    .disabled(model.busy)
+                    Button { confirmRepair = true } label: {
+                        Label(c.dataRepairNow, systemImage: "wrench.and.screwdriver")
+                    }
+                    .buttonStyle(.bordered)
+                    .disabled(model.busy)
+                    Button(role: .destructive) { confirmDeepRecover = true } label: {
+                        Label(c.dataDeepRecover, systemImage: "arrow.triangle.2.circlepath")
+                    }
+                    .buttonStyle(.bordered)
+                    .disabled(model.busy)
+                    Button { openBackupFolder() } label: {
+                        Label(c.dataOpenBackupFolder, systemImage: "folder")
+                    }
+                    .buttonStyle(.bordered)
+                    .disabled(model.busy)
+                }
+                if let health = model.health {
+                    VStack(alignment: .leading, spacing: 5) {
+                        statusLine(health)
+                        detailLine(c.dataDBPath, health.databaseURL.path)
+                        if !health.journalMode.isEmpty { detailLine(c.dataJournal, health.journalMode) }
+                        detailLine(c.dataIntegrity, health.integrity)
+                        detailLine(c.dataWal, health.hasWalFrames ? "\(bytes(health.walBytes))（\(c.dataWalPending)）" : (health.walBytes > 0 ? bytes(health.walBytes) : c.dataNone))
+                        detailLine(c.dataShm, health.shmIrregular ? c.dataShmIrregular : (health.shmBytes > 0 ? "\(bytes(health.shmBytes))（\(c.dataShmNormal)）" : c.dataNone))
+                        if !health.activeOpeners.isEmpty {
+                            detailLine(c.dataOpeners, health.activeOpeners.joined(separator: " "))
+                        }
+                        Text(model.mothx.ownsRunningProcess ? c.dataRestoreHint : c.dataExternalServiceHint)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .padding(.top, 4)
+                    }
+                } else if model.busy {
+                    ProgressView()
+                }
+                backupList
+                if !model.log.isEmpty {
+                    Text(model.log)
+                        .font(.system(.caption, design: .monospaced))
+                        .foregroundStyle(.secondary)
+                        .textSelection(.enabled)
+                        .frame(maxWidth: .infinity, alignment: .topLeading)
+                        .padding(10)
+                        .background(Color.primary.opacity(0.05))
+                        .clipShape(RoundedRectangle(cornerRadius: 8))
+                }
+            }
+        }
+        .task { model.refresh() }
+        .confirmationDialog(
+            c.dataRestoreDialogTitle,
+            isPresented: Binding(get: { confirmRestore != nil }, set: { if !$0 { confirmRestore = nil } }),
+            titleVisibility: .visible
+        ) {
+            Button(c.dataRestoreAction, role: .destructive) {
+                guard let backup = confirmRestore else { return }
+                confirmRestore = nil
+                Task { await model.restore(from: backup) }
+            }
+            Button(c.cancel, role: .cancel) { confirmRestore = nil }
+        } message: {
+            Text(confirmRestore.map { c.dataRestoreDialogMessage($0.displayName) } ?? "")
+        }
+        .confirmationDialog(c.dataRepairNow, isPresented: $confirmRepair, titleVisibility: .visible) {
+            Button(c.dataRepairNow) {
+                confirmRepair = false
+                Task { await model.repairFiles() }
+            }
+            Button(c.cancel, role: .cancel) { confirmRepair = false }
+        } message: {
+            Text(c.dataRepairDialogMessage)
+        }
+        .confirmationDialog(c.dataDeepRecover, isPresented: $confirmDeepRecover, titleVisibility: .visible) {
+            Button(c.dataDeepRecover, role: .destructive) {
+                confirmDeepRecover = false
+                Task { await model.deepRecover() }
+            }
+            Button(c.cancel, role: .cancel) { confirmDeepRecover = false }
+        } message: {
+            Text(c.dataDeepRecoverDialogMessage)
+        }
+    }
+
+    private var healthSummary: some View {
+        HStack(alignment: .firstTextBaseline, spacing: 8) {
+            Text(c.dataStatus).font(.headline)
+            Spacer()
+            if let health = model.health {
+                let (tint, title) = verdictStyle(health)
+                HStack(spacing: 6) {
+                    Image(systemName: verdictIcon(health)).font(.system(size: 12))
+                    Text(title).font(.subheadline.weight(.semibold))
+                }
+                .foregroundStyle(tint)
+                .padding(.horizontal, 10)
+                .padding(.vertical, 4)
+                .background(tint.opacity(0.12))
+                .clipShape(Capsule())
+            }
+        }
+    }
+
+    private func statusLine(_ health: SessionDBHealth) -> some View {
+        HStack(spacing: 8) {
+            Image(systemName: verdictIcon(health))
+                .foregroundStyle(verdictStyle(health).0)
+            Text(health.diagnosisLine)
+                .font(.callout)
+        }
+    }
+
+    private func verdictStyle(_ health: SessionDBHealth) -> (Color, String) {
+        switch health.verdict {
+        case .healthy: return (.green, c.dataStatusHealthy)
+        case .residue: return (.orange, c.dataStatusResidue)
+        case .corrupted: return (.red, c.dataStatusCorrupted)
+        case .missing: return (.orange, c.dataStatusMissing)
+        }
+    }
+
+    private func verdictIcon(_ health: SessionDBHealth) -> String {
+        switch health.verdict {
+        case .healthy: return "checkmark.circle.fill"
+        case .residue, .missing: return "exclamationmark.triangle.fill"
+        case .corrupted: return "xmark.octagon.fill"
+        }
+    }
+
+    private func detailLine(_ label: String, _ value: String) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: 8) {
+            Text(label).font(.caption).foregroundStyle(.secondary).frame(width: 90, alignment: .leading)
+            Text(value)
+                .font(.caption)
+                .textSelection(.enabled)
+                .lineLimit(1)
+                .truncationMode(.middle)
+            Spacer(minLength: 0)
+        }
+    }
+
+    private var backupList: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text(c.dataBackups).font(.headline).padding(.top, 6)
+            if model.backups.isEmpty {
+                Text(c.dataNoBackups)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            } else {
+                ForEach(model.backups.prefix(6)) { backup in
+                    HStack(spacing: 8) {
+                        Image(systemName: backup.valid ? "checkmark.circle.fill" : "xmark.circle.fill")
+                            .foregroundStyle(backup.valid ? .green : .red)
+                            .font(.system(size: 12))
+                        Text(backup.displayName)
+                            .font(.caption)
+                            .textSelection(.enabled)
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                        Text("\(dateString(backup.date)) · \(bytes(backup.size))")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                        if !backup.valid {
+                            Text(c.dataUnusableBadge)
+                                .font(.caption2.bold())
+                                .foregroundStyle(.red)
+                        }
+                        Spacer()
+                        if backup.valid {
+                            Button(c.dataRestore) { confirmRestore = backup }
+                                .buttonStyle(.borderless)
+                                .font(.caption)
+                                .disabled(model.busy)
+                        }
+                    }
+                    .padding(.vertical, 2)
+                }
+            }
+        }
+    }
+
+    private func openBackupFolder() {
+        let url = model.backupDirectory
+        try? FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
+        NSWorkspace.shared.open(url)
+    }
+
+    private func bytes(_ value: Int64) -> String {
+        ByteCountFormatter.string(fromByteCount: value, countStyle: .file)
+    }
+
+    private func dateString(_ date: Date) -> String {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "yyyy-MM-dd HH:mm"
+        return formatter.string(from: date)
     }
 }
 

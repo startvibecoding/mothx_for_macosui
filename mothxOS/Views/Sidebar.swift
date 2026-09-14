@@ -498,14 +498,38 @@ struct SessionTreeRow: View {
     let session: MothxSession; let selected: Bool; let select: () -> Void; let delete: () -> Void
     let moveToProject: ((String) -> Void)?
     @State private var isHovered = false
+    @State private var dotPulse = false
+
+    private var shouldPulse: Bool { mothx.runningSessionIDs.contains(session.id) }
+
+    /// 会话运行状态圆点：运行中蓝点，完成后未查看绿点；用户正在查看或
+    /// 暂停后不会残留。nil 表示不显示圆点。
+    private var runDot: SessionRunDot? {
+        if mothx.runningSessionIDs.contains(session.id) { return .running }
+        if mothx.completedUnseenSessionIDs.contains(session.id) { return .completed }
+        return nil
+    }
 
     var body: some View {
         HStack {
             Button(action: select) {
-                Label(session.title, systemImage: "bubble.left")
-                    .lineLimit(1)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .contentShape(Rectangle())
+                HStack(spacing: 6) {
+                    ZStack(alignment: .topTrailing) {
+                        Image(systemName: "bubble.left")
+                            .font(.system(size: 13))
+                        if let dot = runDot {
+                            Circle()
+                                .fill(dot.color)
+                                .frame(width: 7, height: 7)
+                                .opacity(shouldPulse ? (dotPulse ? 0.25 : 1.0) : 1.0)
+                                .offset(x: 3.5, y: -3.5)
+                        }
+                    }
+                    Text(session.title)
+                        .lineLimit(1)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
             if isHovered {
@@ -546,6 +570,29 @@ struct SessionTreeRow: View {
         .clipShape(RoundedRectangle(cornerRadius: 6))
         .foregroundStyle(selected ? .primary : .secondary)
         .onHover { isHovered = $0 }
+        .onAppear {
+            if shouldPulse { dotPulse = true }
+        }
+        .onChange(of: mothx.runningSessionIDs) { _, _ in
+            dotPulse = shouldPulse
+        }
+        .animation(
+            shouldPulse ? .easeInOut(duration: 0.8).repeatForever() : .default,
+            value: dotPulse
+        )
+    }
+}
+
+/// 侧边栏会话行叠加的运行状态圆点：运行中为蓝点，完成后未点开查看为绿点。
+private enum SessionRunDot {
+    case running
+    case completed
+
+    var color: Color {
+        switch self {
+        case .running: return .blue
+        case .completed: return .green
+        }
     }
 }
 

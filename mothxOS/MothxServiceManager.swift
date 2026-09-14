@@ -304,6 +304,34 @@ final class MothxServiceManager: ObservableObject {
     @Published private(set) var latestChangesBySession: [String: MothxTurnChanges] = [:]
     @Published private(set) var changesByMessage: [String: [String: MothxTurnChanges]] = [:]
     @Published private(set) var isRunning: Bool = false
+    /// 会话侧边栏运行状态圆点：正在运行的会话集合显示蓝点；运行结束后用户
+    /// 仍未点开查看的会话集合显示绿点（用户停留的会话完成后不显示绿点）。
+    @Published private(set) var runningSessionIDs: Set<String> = []
+    @Published private(set) var completedUnseenSessionIDs: Set<String> = []
+    /// 当前正在查看的会话。由 ContentView 在会话切换时同步，供运行结束逻辑
+    /// 判断「完成时正好在这个会话上」以直接熄灭圆点。
+    @Published private(set) var frontmostSessionID: String?
+
+    /// 用户选中/点开一个会话：清除该会话的「完成未查看」绿点并记录前置会话。
+    func sessionBecameVisible(_ sessionID: String?) {
+        frontmostSessionID = sessionID
+        if let sessionID { completedUnseenSessionIDs.remove(sessionID) }
+    }
+
+    /// 会话开始新一轮运行：点亮蓝点并消除该会话可能遗留的历史绿点。
+    private func recordRunStarted(_ sessionID: String) {
+        runningSessionIDs.insert(sessionID)
+        completedUnseenSessionIDs.remove(sessionID)
+    }
+
+    /// 会话运行结束：熄灭蓝点；若用户当前没有停留在此会话上，则标记为
+    /// 「完成未查看」（绿点），否则圆点直接消失。
+    private func recordRunFinished(_ sessionID: String) {
+        runningSessionIDs.remove(sessionID)
+        if frontmostSessionID != sessionID {
+            completedUnseenSessionIDs.insert(sessionID)
+        }
+    }
     /// Agent team orchestration layer (profiles, team runs, scheduling).
     /// Kept as a nested ObservableObject so views observe it via `mothx.teamManager`.
     @Published var teamManager = TeamRunManager()
@@ -1002,6 +1030,36 @@ final class MothxServiceManager: ObservableObject {
         }
     }
 
+    /// Changes the session's own working directory. A session that carries its
+    /// own workDir no longer falls back to the project's (see workDir(for:)).
+    ///
+    /// The in-memory session is updated first so the workspace header, the run
+    /// submission path and the embedded TUI panel pick up the new directory
+    /// immediately. Persistence to the server metadata is best-effort: older
+    /// server versions only accept projectId/pinned on this endpoint, so a
+    /// rejection is logged and never blocks the local change (the next run
+    /// submits `workDir` in the run payload, which the server records too).
+    func setSessionWorkDir(sessionID: String, workDir: String) async {
+        guard !sessionID.isEmpty else { return }
+        let normalized = workDir.trimmingCharacters(in: .whitespacesAndNewlines)
+        let assignedValue = normalized.isEmpty ? nil : normalized
+        if let index = sessions.firstIndex(where: { $0.id == sessionID }) {
+            sessions[index].workDir = assignedValue
+        }
+        if var pending = pendingSessions[sessionID] {
+            pending.workDir = assignedValue
+            pendingSessions[sessionID] = pending
+        }
+        recordRuntimeLog("sessions", "work directory changed session=\(sessionID) workDir=\(normalized)")
+        do {
+            let session = sessions.first(where: { $0.id == sessionID }) ?? pendingSessions[sessionID]
+            let body = try jsonData(["workDir": normalized, "projectId": session?.projectID ?? ""])
+            _ = try await request(path: "api/sessions/\(sessionID)/metadata", method: "PATCH", body: body)
+        } catch {
+            recordRuntimeLog("sessions", "work directory persisted locally only session=\(sessionID): \(describe(error))")
+        }
+    }
+
     func fetchStats(path: String) async -> Data? {
         do {
             return try await request(path: path, method: "GET")
@@ -1127,6 +1185,9 @@ final class MothxServiceManager: ObservableObject {
         pendingSessions.removeValue(forKey: id)
         messagesBySession.removeValue(forKey: id)
         historicalRunsByMessage.removeValue(forKey: id)
+        runningSessionIDs.remove(id)
+        completedUnseenSessionIDs.remove(id)
+        if frontmostSessionID == id { frontmostSessionID = nil }
         do { try localProjectStore?.removeSession(sessionID: id) }
         catch { settingsError = copy.deleteSessionProjectLinkFailedPrefix(describe(error)) }
         do {
@@ -1517,6 +1578,7 @@ final class MothxServiceManager: ObservableObject {
         runElapsed = 0
         resetRunMetrics(sessionID: sessionID)
         runSessionID = sessionID
+        recordRunStarted(sessionID)
         runReplyMessageID = nil
         currentRunID = runID
         currentPlan = nil
@@ -1573,7 +1635,7 @@ final class MothxServiceManager: ObservableObject {
             startRunEventStream(sessionID: sessionID)
             runStatus = "running"
             isSubmittingRun = false
-            let stopReason = try await acpClient.prompt(sessionID: sessionID, text: message)
+            let stopReason = try await acpClient.prompt(sessionID: sessionID, text: messageWithChineseDirective(message))
             await refreshACPUsage(sessionID: sessionID)
             runElapsed = elapsedSinceRunStart()
             stopRunElapsedTimer()
@@ -1591,6 +1653,7 @@ final class MothxServiceManager: ObservableObject {
                 runError = copy.text("ACP 运行未完整结束：\(stopReason)", "ACP run ended incompletely: \(stopReason)")
             }
             await finalizeRunChanges(sessionID: sessionID)
+            recordRunFinished(sessionID)
             return runID
         } catch {
             runElapsed = elapsedSinceRunStart()
@@ -1607,6 +1670,7 @@ final class MothxServiceManager: ObservableObject {
             }
             recordRuntimeLog("acp", "run failed session=\(sessionID) error=\(describe(error))")
             await finalizeRunChanges(sessionID: sessionID)
+            recordRunFinished(sessionID)
             return nil
         }
     }
@@ -1709,16 +1773,16 @@ final class MothxServiceManager: ObservableObject {
                 plan: old.plan, summary: old.summary, hasDetail: old.hasDetail, createdAt: old.createdAt
             )
         } else if role == "user",
-                  let index = messages.lastIndex(where: { $0.id.hasPrefix("local-") && $0.role == "user" && $0.content == chunk }) {
+                  let index = messages.lastIndex(where: { $0.id.hasPrefix("local-") && $0.role == "user" && $0.content == strippingChineseDirective(chunk) }) {
             let old = messages[index]
             messages[index] = MothxMessage(
-                id: id, seq: old.seq, role: role, content: chunk,
+                id: id, seq: old.seq, role: role, content: strippingChineseDirective(chunk),
                 toolCallId: nil, toolName: nil, arguments: "", plan: nil,
                 summary: nil, hasDetail: false, createdAt: old.createdAt
             )
         } else {
             messages.append(MothxMessage(
-                id: id, seq: nil, role: role, content: chunk,
+                id: id, seq: nil, role: role, content: role == "user" ? strippingChineseDirective(chunk) : chunk,
                 toolCallId: nil, toolName: nil, arguments: "", plan: nil,
                 summary: nil, hasDetail: false, createdAt: ISO8601DateFormatter().string(from: Date())
             ))
@@ -1995,6 +2059,42 @@ final class MothxServiceManager: ObservableObject {
         return nil
     }
 
+    /// Detects Chinese in a user message. Mixed Chinese-English text still
+    /// counts as Chinese; anything without a CJK ideograph counts as English.
+    private func containsChinese(_ text: String) -> Bool {
+        text.unicodeScalars.contains { scalar in
+            switch scalar.value {
+            case 0x3400...0x4DBF,   // CJK Extension A
+                 0x4E00...0x9FFF,   // CJK Unified Ideographs
+                 0xF900...0xFAFF,   // CJK Compatibility Ideographs
+                 0x20000...0x2FA1F: // CJK Extensions B–F (astral plane)
+                return true
+            default:
+                return false
+            }
+        }
+    }
+
+    /// The language directive appended to Chinese user messages. It must be
+    /// stripped before display so the UI shows exactly what the user typed,
+    /// while the model still receives it.
+    private let chineseDirectiveSuffix = "\n\n【用中文思考与回复】"
+
+    /// 当用户消息是中文时，在末尾追加提示：用中文思考与回复。
+    /// Appends the Chinese thinking/reply directive when the message is Chinese.
+    private func messageWithChineseDirective(_ message: String) -> String {
+        guard containsChinese(message) else { return message }
+        return message + chineseDirectiveSuffix
+    }
+
+    /// Removes the programmatically appended Chinese thinking/reply directive
+    /// from a message, restoring the exact text the user submitted. Messages the
+    /// user typed themselves are left untouched.
+    private func strippingChineseDirective(_ message: String) -> String {
+        guard message.hasSuffix(chineseDirectiveSuffix) else { return message }
+        return String(message.dropLast(chineseDirectiveSuffix.count))
+    }
+
     func submitRun(sessionID: String, message: String, images: [String], workDir: String = "", provider: String = "", model: String = "", mode: String = "agent", tools: [String] = [], skills: [String] = [], forceServe: Bool = false) async -> String? {
         guard !message.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !images.isEmpty else { return nil }
         clearImageRecognitionProgress()
@@ -2031,6 +2131,7 @@ final class MothxServiceManager: ObservableObject {
         runElapsed = 0
         resetRunMetrics(sessionID: sessionID)
         runSessionID = sessionID
+        recordRunStarted(sessionID)
         runReplyMessageID = nil
         currentRunID = nil
         currentPlan = nil
@@ -2060,14 +2161,18 @@ final class MothxServiceManager: ObservableObject {
             var submittedMessage = message
             if !directiveSkills.isEmpty {
                 submittedMessage = message + "\n\n" + directiveSkills.map { "/skill:\($0)" }.joined(separator: "  ")
-                payload["message"] = submittedMessage
             }
+            // v1.2.x: 用户提问为中文时在末尾附加语言指令（中英混合也算中文）。
+            submittedMessage = messageWithChineseDirective(submittedMessage)
+            payload["message"] = submittedMessage
             if !workDir.isEmpty { payload["workDir"] = workDir }
             if !images.isEmpty { payload["images"] = images }
             // Show the submitted question immediately. The API returns 202 and
             // runs the agent in the background, so the assistant message is not
-            // available in the first history response yet.
-            let localMessage = MothxMessage(id: "local-\(UUID().uuidString)", seq: nil, role: "user", content: submittedMessage, toolCallId: nil, toolName: nil, arguments: "", plan: nil, summary: nil, hasDetail: false, createdAt: ISO8601DateFormatter().string(from: Date()))
+            // available in the first history response yet. The language
+            // directive stays in the payload for the model but is stripped from
+            // the displayed bubble so it matches what the user actually typed.
+            let localMessage = MothxMessage(id: "local-\(UUID().uuidString)", seq: nil, role: "user", content: strippingChineseDirective(submittedMessage), toolCallId: nil, toolName: nil, arguments: "", plan: nil, summary: nil, hasDetail: false, createdAt: ISO8601DateFormatter().string(from: Date()))
             messagesBySession[sessionID, default: []].append(localMessage)
             let body = try jsonData(payload)
             let response = try await request(path: "api/sessions/\(sessionID)/runs", method: "POST", body: body, headers: ["Idempotency-Key": UUID().uuidString])
@@ -2081,6 +2186,7 @@ final class MothxServiceManager: ObservableObject {
                 runStatus = "failed"
                 currentPlan = nil
                 runError = copy.noRunIDReturned
+                recordRunFinished(sessionID)
                 return nil
             }
             if let projectID = pendingProjectID {
@@ -2103,6 +2209,7 @@ final class MothxServiceManager: ObservableObject {
             currentPlan = nil
             runError = describe(error)
             settingsError = copy.submitRunFailedPrefix(describe(error))
+            recordRunFinished(sessionID)
             return nil
         }
     }
@@ -2393,6 +2500,7 @@ final class MothxServiceManager: ObservableObject {
                         runError = object["error"] as? String ?? object["errorMessage"] as? String ?? (status.lowercased() == "incomplete" ? copy.runFailedFallback : copy.waitReplyTimeout)
                     }
                     await finalizeRunChanges(sessionID: sessionID)
+                    recordRunFinished(sessionID)
                     await loadWorkspace()
                     return
                 }
@@ -2419,6 +2527,7 @@ final class MothxServiceManager: ObservableObject {
                   !runID.isEmpty else { return }
 
             runSessionID = sessionID
+            recordRunStarted(sessionID)
             currentRunID = runID
             runStatus = (active["status"] as? String) ?? (active["state"] as? String) ?? "running"
             resetRunMetrics(sessionID: sessionID)
@@ -3514,7 +3623,14 @@ final class MothxServiceManager: ObservableObject {
 
             default:
                 // user, assistant
-                content = (item["content"] as? String) ?? (item["text"] as? String) ?? ""
+                var decodedContent = (item["content"] as? String) ?? (item["text"] as? String) ?? ""
+                // The server persists the submitted message verbatim, including
+                // the programmatically appended Chinese language directive.
+                // Strip it so reloaded history matches what the user typed.
+                if role == "user" {
+                    decodedContent = strippingChineseDirective(decodedContent)
+                }
+                content = decodedContent
                 toolCallId = nil
                 toolName = nil
                 arguments = ""
@@ -4518,33 +4634,87 @@ final class MothxServiceManager: ObservableObject {
     /// server-side auto-load in the serve transport).
     private static let acpNativeMCPMergeMinVersion = "1.3.101"
 
-    /// Searches the official MCP Registry (public endpoint, no auth). Results
-    /// are deduplicated by server name because the registry returns one row per
-    /// published version.
-    func searchMCPMarket(query: String, limit: Int = 30, cursor: String? = nil) async throws -> MothxMCPMarketResponse {
+    /// Searches the MCPMarket.cn catalog (public endpoint, no auth). The
+    /// catalog uses offset pagination (`page`/`per_page`), so `page` replaces
+    /// the cursor-based pagination of the old registry endpoint.
+    func searchMCPMarket(query: String, page: Int = 1, perPage: Int = 30) async throws -> MothxMCPMarketResponse {
         var components = URLComponents()
         components.scheme = "https"
-        components.host = "registry.modelcontextprotocol.io"
-        components.path = "/v0/servers"
-        var items = [URLQueryItem(name: "limit", value: String(limit))]
+        components.host = "mcpmarket.cn"
+        components.path = "/api/servers"
+        var items = [
+            URLQueryItem(name: "page", value: String(max(page, 1))),
+            URLQueryItem(name: "per_page", value: String(max(perPage, 1))),
+        ]
         let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
         if !trimmed.isEmpty { items.append(URLQueryItem(name: "search", value: trimmed)) }
-        if let cursor, !cursor.isEmpty { items.append(URLQueryItem(name: "cursor", value: cursor)) }
         components.queryItems = items
         guard let url = components.url else { throw URLError(.badURL) }
 
         var request = URLRequest(url: url)
         request.timeoutInterval = 20
         request.setValue("application/json", forHTTPHeaderField: "Accept")
+        request.setValue("mothxOS/1.0", forHTTPHeaderField: "User-Agent")
         let (data, response) = try await URLSession.shared.data(for: request)
         guard let http = response as? HTTPURLResponse else { throw URLError(.badServerResponse) }
         guard (200..<300).contains(http.statusCode) else {
-            throw MothxAPIError(statusCode: http.statusCode, detail: "MCP registry request failed")
+            throw MothxAPIError(statusCode: http.statusCode, detail: "MCP marketplace request failed")
         }
-        var decoded = try JSONDecoder().decode(MothxMCPMarketResponse.self, from: data)
-        var seen = Set<String>()
-        decoded.servers = decoded.servers.filter { seen.insert($0.server.name).inserted }
-        return decoded
+        return try JSONDecoder().decode(MothxMCPMarketResponse.self, from: data)
+    }
+
+    /// Fetches one MCPMarket.cn server's detail record, which contains the
+    /// installable `mcp_config` (standard `mcpServers` object).
+    func fetchMCPMarketDetail(id: String) async throws -> MothxMCPMarketDetail {
+        var components = URLComponents()
+        components.scheme = "https"
+        components.host = "mcpmarket.cn"
+        components.path = "/api/servers/\(id)"
+        guard let url = components.url else { throw URLError(.badURL) }
+
+        var request = URLRequest(url: url)
+        request.timeoutInterval = 20
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+        request.setValue("mothxOS/1.0", forHTTPHeaderField: "User-Agent")
+        let (data, response) = try await URLSession.shared.data(for: request)
+        guard let http = response as? HTTPURLResponse else { throw URLError(.badServerResponse) }
+        guard (200..<300).contains(http.statusCode) else {
+            throw MothxAPIError(statusCode: http.statusCode, detail: "MCP marketplace detail request failed")
+        }
+        return try JSONDecoder().decode(MothxMCPMarketDetail.self, from: data)
+    }
+
+    /// Searches the ModelScope MCP square (`modelscope.cn/mcp`, public
+    /// endpoint, no auth). Unlike MCPMarket.cn this is a PUT endpoint whose
+    /// JSON body carries page/query; the rows already include the installable
+    /// `ServerConfig`, so adding normally needs no second request.
+    func searchModelScopeMCP(query: String, page: Int = 1, perPage: Int = 30) async throws -> MothxModelScopeMCPResult {
+        guard let url = URL(string: "https://modelscope.cn/api/v1/dolphin/mcpServers") else { throw URLError(.badURL) }
+        var request = URLRequest(url: url)
+        request.httpMethod = "PUT"
+        request.timeoutInterval = 20
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+        request.setValue("mothxOS/1.0", forHTTPHeaderField: "User-Agent")
+        let payload: [String: Any] = [
+            "PageSize": max(perPage, 1),
+            "PageNumber": max(page, 1),
+            "Query": query.trimmingCharacters(in: .whitespacesAndNewlines),
+            "Criterion": [],
+        ]
+        request.httpBody = try JSONSerialization.data(withJSONObject: payload)
+
+        let (data, response) = try await URLSession.shared.data(for: request)
+        guard let http = response as? HTTPURLResponse else { throw URLError(.badServerResponse) }
+        guard (200..<300).contains(http.statusCode) else {
+            throw MothxAPIError(statusCode: http.statusCode, detail: "ModelScope MCP marketplace request failed")
+        }
+        let decoded = try JSONDecoder().decode(MothxModelScopeMCPResponse.self, from: data)
+        guard decoded.code == 200, decoded.success, let meta = decoded.data?.mcpServer else {
+            let detail = decoded.message.isEmpty ? "ModelScope MCP marketplace returned an error" : decoded.message
+            throw MothxAPIError(statusCode: decoded.code, detail: detail)
+        }
+        return MothxModelScopeMCPResult(servers: meta.servers, total: meta.totalCount)
     }
 
     // MARK: - Project-level MCP

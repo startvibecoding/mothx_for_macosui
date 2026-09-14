@@ -31,6 +31,9 @@ struct ContentView: View {
     @State private var updateStage: MothxUpdateStage = .stoppingService
     @State private var updateLog = ""
     @State private var skipUpdatePromptThisLaunch = false
+    /// 数据检查与修复模式（启动检测或设置页触发）。
+    @State private var showRepair = false
+    @State private var repairReason = ""
 
     @ViewBuilder
     private var workspaceContent: some View {
@@ -93,7 +96,17 @@ struct ContentView: View {
         .preferredColorScheme(effectiveColorScheme)
         .overlay(alignment: .top) { ConnectionBanner(state: mothx.state) }
         .sheet(isPresented: $showEnvironmentCheck) {
-            EnvironmentCheckSheet(isPresented: $showEnvironmentCheck)
+            EnvironmentCheckSheet(
+                isPresented: $showEnvironmentCheck,
+                onOpenRepair: { reason in
+                    repairReason = reason
+                    showEnvironmentCheck = false
+                    showRepair = true
+                }
+            )
+        }
+        .sheet(isPresented: $showRepair) {
+            SessionDBRepairSheet(mothx: mothx, reason: repairReason, isPresented: $showRepair)
         }
         .sheet(isPresented: $showNewProject) {
             VStack(alignment: .leading, spacing: 16) {
@@ -176,6 +189,11 @@ struct ContentView: View {
             // persisted sessions are available. Re-evaluate after the full
             // session list finishes loading so the workspace is not blank.
             selectDefaultSessionIfNeeded()
+        }
+        .onChange(of: selectedSessionID) { _, newValue in
+            // 同步当前查看的会话：点开一个会话时清除其「完成未查看」绿点，
+            // 并让运行结束逻辑知道用户正停留在此会话上（完成后圆点直接消失）。
+            mothx.sessionBecameVisible(newValue)
         }
     }
 

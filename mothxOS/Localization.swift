@@ -384,7 +384,7 @@ struct Copy {
     var mcpProjectNoSession: String { text("该项目还没有会话，请先在该项目下发起一次对话，再回来配置项目级 MCP。", "This project has no session yet. Start a conversation in the project first, then return to configure project-level MCP.") }
     var mcpProjectSaved: String { text("项目级 MCP 已保存，新会话生效。", "Project MCP saved; takes effect on new sessions.") }
     var mcpMarketTitle: String { text("MCP 市场", "MCP marketplace") }
-    var mcpMarketSubtitle: String { text("registry.modelcontextprotocol.io", "registry.modelcontextprotocol.io") }
+    var mcpMarketSubtitle: String { text("mcpmarket.cn", "mcpmarket.cn") }
     var mcpMarketSearchPlaceholder: String { text("搜索 MCP 服务器", "Search MCP servers") }
     var mcpMarketSearch: String { text("搜索", "Search") }
     var mcpMarketEmpty: String { text("没有找到 MCP 服务器", "No MCP servers found") }
@@ -392,7 +392,12 @@ struct Copy {
     var mcpMarketAddedLabel: String { text("已加入", "Added") }
     var mcpMarketUnsupported: String { text("该条目暂不支持自动填充，请手动配置。", "This entry cannot be auto-filled; please configure it manually.") }
     var mcpMarketLoadMore: String { text("加载更多", "Load more") }
-    var mcpMarketHint: String { text("来自官方 MCP Registry 的公开目录，数据由社区/厂商发布；加入后请核对命令、参数与密钥再保存。", "Public catalog from the official MCP Registry, published by the community/vendors. Verify command, args, and secrets before saving.") }
+    var mcpMarketHint: String { text("来自 MCPMarket.cn 的公开目录（6.8 万+ 服务器），数据由社区/厂商发布；加入后请核对命令、参数与密钥再保存。", "Public catalog from MCPMarket.cn (60,000+ servers), published by the community/vendors. Verify command, args, and secrets before saving.") }
+    var mcpMarketTabMCPMarket: String { text("MCPMarket.cn", "MCPMarket.cn") }
+    var mcpMarketTabModelScope: String { text("ModelScope 魔搭", "ModelScope") }
+    var mcpMarketModelScopeSubtitle: String { text("modelscope.cn/mcp", "modelscope.cn/mcp") }
+    var mcpMarketModelScopeHint: String { text("来自 ModelScope（魔搭）MCP 广场的公开目录（1 万+ MCP 服务），支持中文搜索；加入后请核对命令、参数与密钥再保存。", "Public catalog from the ModelScope MCP square (10,000+ MCP servers), with Chinese search support. Verify command, args, and secrets before saving.") }
+    var mcpMarketTab: String { text("市场选择", "Marketplace") }
 
     // MARK: - Computer Use
 
@@ -522,6 +527,51 @@ struct Copy {
     var installAdminCanceled: String { text("已取消安装（未执行）", "Canceled — nothing was installed") }
     var installAdminFailedPrefix: (String) -> String { { detail in self.text("管理员安装失败：\(detail)", "Admin install failed: \(detail)") } }
 
+    // MARK: - Data check & repair
+    var dataRepair: String { text("数据与备份", "Data & Backups") }
+    var dataRepairLongTitle: String { text("数据检查与修复", "Data Check & Repair") }
+    var dataRepairSubtitle: String { text("检查会话库 (sessions.db) 的健康状态，数据正常时自动备份，异常时先从备份恢复。", "Check the session database (sessions.db), back it up when healthy, and restore from backups first when something breaks.") }
+    var dataLaunchReasonSyncFailed: String { text("项目与会话同步失败，已进入数据检查与修复模式。", "Project and session sync failed. Opening data check & repair.") }
+    var dataLaunchReasonCorrupt: String { text("会话库完整性检查未通过，已进入数据检查与修复模式。", "Session database integrity check failed. Opening data check & repair.") }
+    var dataLaunchReasonMissing: String { text("会话库不存在，已进入数据检查与修复模式（可尝试从备份恢复）。", "Session database is missing. Opening data check & repair (restore from a backup is available).") }
+    var dataStatus: String { text("状态", "Status") }
+    var dataStatusHealthy: String { text("数据正常", "Healthy") }
+    var dataStatusResidue: String { text("有残留文件，可修复", "Residue found — repairable") }
+    var dataStatusCorrupted: String { text("数据已损坏", "Corrupted") }
+    var dataStatusMissing: String { text("数据库缺失", "Database missing") }
+    var dataDBPath: String { text("数据库", "Database") }
+    var dataIntegrity: String { text("完整性", "Integrity") }
+    var dataJournal: String { text("日志模式", "Journal mode") }
+    var dataWal: String { text("WAL 待合并", "WAL frames") }
+    var dataShm: String { text("SHM 索引", "SHM index") }
+    var dataOpeners: String { text("占用进程", "Holders") }
+    var dataNone: String { text("无", "none") }
+    var dataWalPending: String { text("待合并", "pending") }
+    var dataShmIrregular: String { text("异常（将重建）", "irregular (will rebuild)") }
+    var dataShmNormal: String { text("正常", "ok") }
+    var dataBackups: String { text("可用备份（新→旧）", "Available backups (newest first)") }
+    var dataNoBackups: String { text("还没有备份。数据正常时，启动应用会自动创建一致性快照。", "No backups yet. When data is healthy, the app creates a consistent snapshot automatically at launch.") }
+    var dataBackupNow: String { text("立即备份", "Back up now") }
+    var dataOpenBackupFolder: String { text("打开备份目录", "Open backups folder") }
+    var dataRestore: String { text("从备份恢复", "Restore from backup") }
+    var dataRestoreDialogTitle: String { text("确认从备份恢复？", "Restore from this backup?") }
+    var dataRestoreDialogMessage: (String) -> String { { name in self.text("将停止 mothx 服务，用 \"\(name)\" 替换当前会话库；当前文件会先归档保存。请确认这是你想恢复的数据。", "The mothx service will be stopped and \"\(name)\" will replace the current session database. The current files are archived first. Make sure this is the data you want.") } }
+    var dataRestoreAction: String { text("恢复", "Restore") }
+    var dataRepairNow: String { text("修复 WAL / SHM", "Repair WAL / SHM") }
+    var dataRepairDialogMessage: String { text("将清理异常的共享内存索引并合并待写入日志。确认没有其他程序（如 TUI）正在使用会话库。", "Irregular shared-memory indexes will be cleaned and pending WAL frames merged. Make sure no other program (e.g. the TUI) is using the session database.") }
+    var dataDeepRecover: String { text("深度恢复 (.recover)", "Deep recover (.recover)") }
+    var dataDeepRecoverDialogMessage: String { text("最后一招：尽力从已损坏的库中导出可抢救的数据并重建数据库，部分撕裂数据可能丢失。原文件会先归档。", "Last resort: salvage what can be read from the damaged database and rebuild it. Some torn frames may be lost. The original files are archived first.") }
+    var dataRecheck: String { text("重新检查", "Re-check") }
+    var dataResync: String { text("重新同步数据", "Resync data") }
+    var dataContinue: String { text("完成并继续", "Done & continue") }
+    var dataLogTitle: String { text("操作日志", "Operation log") }
+    var dataEmptyLog: String { text("尚无操作。", "No operations yet.") }
+    var dataAutoBackupToggle: String { text("数据正常时，启动应用自动备份会话库", "Back up the session database automatically at launch when data is healthy") }
+    var dataUnusableBadge: String { text("不可用", "unusable") }
+    var dataRestoreHint: String { text("恢复 / 修复 / 深度恢复会先停止本应用启动的 mothx 服务，操作完成后自动重启。", "Restore / repair / deep recover stop the mothx service started by this app first, then restart it automatically.") }
+    var dataExternalServiceHint: String { text("检测到 mothx 由外部启动（非本应用），无法代为停止；请先手动关闭 TUI / 外部服务再执行写操作。", "mothx was started outside this app and cannot be stopped for you. Close the TUI / external server before running write operations.") }
+    var dataClose: String { text("关闭", "Close") }
+
     // MARK: - Workspace
     var ok: String { text("确定", "OK") }
     var attachmentsInstruction: (String) -> String { { names in self.text("请处理工作目录中的附件：\(names)", "Please process the attachments in the working directory: \(names)") } }
@@ -529,6 +579,11 @@ struct Copy {
     var addAttachmentFailedPrefix: (String) -> String { { detail in self.text("添加附件失败：\(detail)", "Failed to add attachment: \(detail)") } }
     var noWorkDir: String { text("无工作目录", "No working directory") }
     var noAppsForDirectory: String { text("没有找到可打开此目录的应用", "No apps found to open this directory") }
+    var changeWorkDirectory: String { text("更换", "Change") }
+    var chooseNewWorkDirectoryMessage: String { text("为当前会话选择新的工作目录", "Choose a new working directory for this session") }
+    func helpChangeWorkDirectory(_ directory: String) -> String {
+        text("更换会话的工作目录（当前：\(directory)）", "Change the session's working directory (currently: \(directory))")
+    }
     var attachmentsCountLabel: (Int) -> String { { n in self.text("附件 \(n) 个", "\(n) attachments") } }
     var moreOptionsHelp: String { text("更多选项", "More options") }
     var noModelsForProvider: String { text("当前运营商没有可用模型", "No models available for the current provider") }
