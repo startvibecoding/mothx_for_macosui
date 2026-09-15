@@ -163,6 +163,23 @@ enum RuntimeInstall {
         !numericComponents(version).isEmpty
     }
 
+    /// The published version an in-place online update should install when it
+    /// is strictly newer than the installed runtime, else nil.
+    ///
+    /// This is deliberately independent of the hard-coded compatibility patch
+    /// (`recommendedVersion`): a locally-installed or newer 1.3.x build (e.g.
+    /// 1.3.100) is compatible with the app yet still behind a freshly
+    /// published 1.3.101, so it must keep being offered an update instead of
+    /// being reported as "compatible" and left alone.
+    static func onlineUpdateTarget(current: String?, latest: String?) -> String? {
+        guard let current, let latest else { return nil }
+        let trimmedCurrent = current.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmedLatest = latest.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard isValidVersion(trimmedCurrent), isValidVersion(trimmedLatest),
+              versionNeedsUpdate(current: trimmedCurrent, latest: trimmedLatest) else { return nil }
+        return trimmedLatest
+    }
+
     /// Latest publishable version if one is available, else nil.
     static func checkMothxUpdate() async -> String? {
         guard let current = await mothxVersionString(),

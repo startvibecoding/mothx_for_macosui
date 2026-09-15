@@ -16,6 +16,21 @@ struct MothxSkill: Identifiable, Hashable {
     let directory: String
     var scope: MothxSkillScope = .remote
 }
+
+/// A supporting document bundled with a skill (e.g. `references/audio.md`).
+/// Extra rule files that ship alongside `SKILL.md` are listed in Settings so
+/// users can open them without editing the canonical skill file.
+struct MothxSkillDocument: Identifiable, Hashable {
+    /// Path relative to the skill directory, e.g. `references/script.md`.
+    let id: String
+    /// Display name (last path component).
+    let name: String
+    /// Path relative to the skill directory.
+    let relativePath: String
+    /// File extension lowercased without the dot (e.g. `md`).
+    let fileExtension: String
+}
+
 // MARK: - SkillHub marketplace models
 
 struct MothxSkillHubInstalledState: Codable, Hashable {

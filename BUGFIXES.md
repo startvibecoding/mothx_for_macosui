@@ -1,6 +1,6 @@
 # mothxOS 问题修复表（BUGFIXES）
 
-更新时间：2026-09-13
+更新时间：2026-09-15
 
 本表是 **已修复问题** 的唯一登记处。目的只有一个：**已经修过的问题不再被后续改动重新破坏**。
 
@@ -39,6 +39,8 @@
 | BUG-0019 | 2026-09-13 | 数据修复 / 启动流程 | 会话库 (sessions.db) 损坏或同步失败时，用户只能在外部跑 `tools/session_db_guard.sh`，App 内无修复入口；修复时也没有“先从备份恢复”的途径 | 修复功能此前完全是 shell 脚本，未集成进 App；App 启动环境检查对同步失败只停留在“重试/退出” | **新增应用内「数据检查与修复」模式**：① 新 `SessionDBRepair.swift`（健康检查 / 一致性快照备份 / 从备份恢复 / WAL/SHM 修复 / `.recover` 深度恢复，全部用 SQLite C API + 系统 `sqlite3` CLI，不依赖仓库内脚本）；② 启动环境检查时若同步失败、或会话库 quick_check 异常、或库缺失但有备份，自动打开 `SessionDBRepairSheet`；③ 数据正常时启动后自动静默备份（`mothxOS.autoBackupOnLaunch` 可关）；④ 修复优先级：先从备份恢复 → WAL/SHM 修复 → 深度恢复；写操作前先停本应用启动的 mothx 服务，完成后自动重启并重新同步；外部启动的 mothx 则提示先关 TUI/服务；⑤ 设置新增「数据与备份」页（健康状态 / 一键备份 / 恢复 / 修复 / 打开备份目录）。回归防护点：备份文件名含毫秒避免同秒覆盖；备份前与快照生成后都做 quick_check；恢复/修复/深度恢复前检查占用（lsof）并先归档现场；启动自动备份失败不阻塞进入主界面；快照复核失败的自愈重试与证据保留见 BUG-0020 | `SessionDBRepair.swift`（新）、`Views/SessionDBRepairSheet.swift`（新）、`Views/SettingsView.swift`、`Views/EnvironmentCheckSheet.swift`、`ContentView.swift`、`Localization.swift` | 待提交 |
 | BUG-0020 | 2026-09-13 | 数据备份 / 会话库 | 数据正常时点「备份」仍偶发失败，报“备份文件未通过完整性检查”（快照 quick_check 失败，源库 quick_check 通过），失败快照还被直接删除 | 备份源以**只读**方式打开 WAL 模式的会话库：只读连接无法重建被并发进程（mothx 服务 / 多实例）打断而异常的 -shm 索引，短暂读到不一致的页面组合会把快照写坏；旧算法在快照校验失败时直接删文件并抛错，不重试、不留证据 | ① 备份源自检与备份都改**读写**方式打开（WAL 模式在打开期自动重建异常 -shm 索引，自愈后读到一致页面）；② `backupNow` 加最多 3 次重试：每次用新文件名，重试前重新确认源库健康，失败间留 0.2s 稳定窗口；③ 失败快照不再删除，改名 `.invalid-N` 保留供排查（后缀不进备份列表）；④ 全部失败时把 quick_check 诊断与证据路径写入错误信息 | `mothxOS/SessionDBRepair.swift` | 待提交 |
 | BUG-0021 | 2026-09-13 | 数据备份 / 会话库 | （BUG-0020 修复后仍复现，且是**必然**失败而非偶发）点「备份」必报“备份文件未通过完整性检查”，证据快照标 `快照 quick_check: unreadable`；现象与 BUG-0020 的“quick_check 失败”不同——源库健康、快照内容其实可用（用 CLI/读写方式打开 quick_check=ok），只是**只读**打开直接报 `unable to open database file`（SQLITE_CANTOPEN） | `sqlite3_backup`（online backup API）会把源库第 1 页**原样**拷入目标文件，第 1 页头含 WAL 文件格式字节（offset 18/19 = `02 02`），于是快照声明自己是 WAL 数据库；但备份 API **不会**为目标文件生成伴生的 `-wal` / `-shm`。只读打开 WAL 格式库需要有 shm 索引，缺失/无法创建时 SQLite 返回 SQLITE_CANTOPEN —— 而 `verifyIntegrity`（校验快照）用的正是 `openReadOnly`，于是快照稳定被判 unreadable（用 `sqlite3` CLI 或读写方式打开则自动生成缺失的 -shm/-wal，看起来“正常”，掩盖了真实根因；实测 4 次备份的 12 个证据快照全部字节相同、全部该现象） | 备份完成后，在目标连接上显式 `PRAGMA journal_mode=DELETE;`：把快照的页头格式字节从 `02 02`（WAL）改回 `01 01`（DELETE），SQLite 同时完成检查点、生成自包含的普通库文件，只读 quick_check 稳定通过；随后清理改写过程可能残留的 `-wal`/`-shm` 伴生文件。已在真实会话库（有并发 mothx 进程写 WAL）上全套复现并验证：修复前只读校验必失败（rc=14 CANTOPEN），修复后只读 quick_check=ok、页头 `01 01`、数据完整（entries=479） | `mothxOS/SessionDBRepair.swift` | 待提交 |
+| BUG-0022 | 2026-09-15 | 数据备份 / 会话库 | 备份目录会长期堆积快照（默认轮转上限 20 份），旧恢复点占空间；备份失败的 `.invalid-N` 证据文件不在轮转范围内，会持续累积 | 轮转上限偏高，且 `.invalid-N` 证据既不进备份列表、也不被 `rotateBackups` 清理 | ① App 侧新增常量 `SessionDBRepair.maxBackups = 5`，`backupNow` 默认按 5 份轮转；② `rotateBackups` 同时轮转 `.db.invalid-*` 证据文件（同样只保留最新 5 份）；③ `tools/session_db_guard.sh` 默认 `KEEP=5`，`docs/session-db-wal-shm.md` 示例同步更新 | `mothxOS/SessionDBRepair.swift`、`tools/session_db_guard.sh`、`docs/session-db-wal-shm.md` | 待提交 |
+| BUG-0022 | 2026-09-15 | 更新 / 版本检测 | 本地 mothx 1.3.100、npm 最新 1.3.101（数字上 1.3.101 更新），设置页「关于」没有显示「在线更新」按钮，启动时的“发现新版本”提示也不弹 | 更新可用性只由硬编码兼容目标 `MothxRuntimeCompatibility.recommendedVersion = "1.3.1"` 决定：`runtimeVersionStatus(current:recommended:)` 在 1.3.x 兼容线内只在 `current < recommended` 时返回 `.updateAvailable`，而 1.3.100 > 1.3.1 一律判为 `.compatible`；npm 最新版本已在 `AboutSection.latestVersion` 拿到却只用于展示，从未参与按钮判定（`checkMothxUpdate()`、`updatePromptTitle/Message/Now` 等字符串均为死代码） | 新增 `RuntimeInstall.onlineUpdateTarget(current:latest:)`，以「npm 最新版严格大于已安装版本」判定在线更新，与兼容线解耦；`AboutSection` 在兼容线外仍走推荐版本的升/降级，线内则显示「在线更新」按钮并把安装目标改为最新版；`ContentView` 启动提示补 `npmLatest` 分支（复用 `updatePrompt*` 文案），`runUpdate` 改为接收并全程传递目标版本（进度面板/日志/sudo 命令一致） | `mothxOS/Utilities/RuntimeInstall.swift`、`Views/AboutSection.swift`、`ContentView.swift` | 待提交 |
 
 > 说明：`88e900d` / `a72175c` / `5c81eeb` 的提交信息较笼统，根因一栏依据 diff 归纳；如后续定位到更准确的根因，直接在该行「根因」补充，不要另起新行。
 >
@@ -78,6 +80,7 @@
 - 轮次归属：Run 只能**按身份**绑定到轮次（`run-user-<runID>` ↔ 轮次 id / user 消息 id），**禁止按列表下标配对**两个不同跨度的窗口（BUG-0018）；匹配不到就不绑定，宁可少挂不可挂错；窗口内重建不了的轮次不得沿用旧绑定。
 - 视频预览：不得改回 SwiftUI `VideoPlayer`，必须用 AppKit `AVPlayerView`（BUG-0010）。
 - 技能：技能列表按 `workDir` 会话维度拉取；本地扫描技能不得进入 run 的 `skills` payload（BUG-0003）。
+- 更新/版本检测：是否“有可用更新”必须同时考虑 npm 最新版本，不得只用硬编码 `MothxRuntimeCompatibility.recommendedVersion` 判定（BUG-0022）；`recommendedVersion` 只用于兼容线（1.3.x）之外的强制升/降级；在线更新的目标版本必须与实际 `npm install -g mothx-installer@<v>`、进度面板与 sudo 命令一致。
 
 **硬约束（来自 dev.md，不属于 BUG 但同样不可破坏）**
 

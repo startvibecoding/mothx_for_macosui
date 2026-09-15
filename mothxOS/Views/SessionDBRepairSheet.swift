@@ -12,6 +12,7 @@ struct SessionDBRepairSheet: View {
     @Binding var isPresented: Bool
 
     @State private var confirmRestore: SessionDBBackup?
+    @State private var confirmDelete: SessionDBBackup?
     @State private var confirmRepair = false
     @State private var confirmDeepRecover = false
     @State private var resyncing = false
@@ -56,6 +57,20 @@ struct SessionDBRepairSheet: View {
             Button(c.cancel, role: .cancel) { confirmRestore = nil }
         } message: {
             Text(confirmRestore.map { c.dataRestoreDialogMessage($0.displayName) } ?? "")
+        }
+        .confirmationDialog(
+            c.dataDeleteBackupDialogTitle,
+            isPresented: Binding(get: { confirmDelete != nil }, set: { if !$0 { confirmDelete = nil } }),
+            titleVisibility: .visible
+        ) {
+            Button(c.dataDeleteBackupAction, role: .destructive) {
+                guard let backup = confirmDelete else { return }
+                confirmDelete = nil
+                Task { await model.deleteBackup(backup) }
+            }
+            Button(c.cancel, role: .cancel) { confirmDelete = nil }
+        } message: {
+            Text(confirmDelete.map { c.dataDeleteBackupDialogMessage($0.displayName) } ?? "")
         }
         .confirmationDialog(c.dataRepairNow, isPresented: $confirmRepair, titleVisibility: .visible) {
             Button(c.dataRepairNow) {
@@ -274,10 +289,12 @@ struct SessionDBRepairSheet: View {
                         }
                         Spacer()
                         if backup.valid {
-                            Button(c.dataRestore) { confirmRestore = backup }
-                                .buttonStyle(.borderless)
-                                .font(.caption)
-                                .disabled(model.busy)
+                            BackupPillButton(title: c.dataRestore, systemImage: "arrow.uturn.backward", tint: .orange, isDisabled: model.busy) {
+                                confirmRestore = backup
+                            }
+                        }
+                        BackupPillButton(title: c.dataDeleteBackup, systemImage: "trash", tint: .red, isDisabled: model.busy) {
+                            confirmDelete = backup
                         }
                     }
                     .padding(.vertical, 3)

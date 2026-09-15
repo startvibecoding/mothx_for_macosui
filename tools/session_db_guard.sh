@@ -28,7 +28,7 @@
 # 选项
 #   -d DIR    数据库目录（默认 ~/.mothx/sessions）
 #   -b DIR    备份目录（默认 ~/.mothx/backups）
-#   -n N      备份保留份数（默认 20）
+#   -n N      备份保留份数（默认 5）
 #   -t MS     busy timeout 毫秒（默认 5000）
 #   -f        强制（repair/recover 在检测到其他进程仍打开库时也执行写操作）
 #   -q        安静模式（只输出关键行）
@@ -36,7 +36,7 @@
 # 示例
 #   tools/session_db_guard.sh check
 #   tools/session_db_guard.sh checkpoint -f        # 明知 TUI 还开着也执行
-#   tools/session_db_guard.sh backup -n 50         # 保留最近 50 份快照
+#   tools/session_db_guard.sh backup -n 5          # 保留最近 5 份快照
 #   tools/session_db_guard.sh recover              # 库已 malformed 时
 #
 # 推荐集成
@@ -51,7 +51,7 @@ set -u
 # ---------- 默认值与全局状态 -------------------------------------------------
 DB_DIR="${HOME}/.mothx/sessions"
 BACKUP_DIR="${HOME}/.mothx/backups"
-KEEP=20
+KEEP=5
 BUSY_MS=5000
 FORCE=0
 QUIET=0

@@ -83,6 +83,7 @@ enum SessionDBRepairError: LocalizedError {
     case cliUnavailable
     case recoverFailed(String)
     case restoreFailed(String)
+    case deleteFailed(String)
 
     var errorDescription: String? {
         switch self {
@@ -104,6 +105,8 @@ enum SessionDBRepairError: LocalizedError {
             return "深度恢复失败: \(message)"
         case .restoreFailed(let message):
             return "恢复失败: \(message)"
+        case .deleteFailed(let message):
+            return "删除备份失败: \(message) (failed to delete backup)"
         }
     }
 }
@@ -132,6 +135,9 @@ enum SessionDBRepair {
             .appendingPathComponent(".mothx", isDirectory: true)
             .appendingPathComponent("backups", isDirectory: true)
     }
+
+    /// 备份轮转上限：备份目录最多保留这么多份快照，更旧的自动删除。
+    nonisolated static let maxBackups = 5
 
     private nonisolated static func walURL(for databaseURL: URL) -> URL {
         URL(fileURLWithPath: databaseURL.path + "-wal")
@@ -197,6 +203,29 @@ enum SessionDBRepair {
             .sorted { $0.date > $1.date }
     }
 
+    /// 删除单个备份快照（连同可能残留的 `-wal` / `-shm` 伴生文件）。
+    /// 只允许删除备份目录内的文件，避免误删他处数据。
+    nonisolated static func deleteBackup(_ backup: SessionDBBackup, backupDir: URL) throws -> String {
+        let fileManager = FileManager.default
+        let target = backup.url.standardizedFileURL
+        let dir = backupDir.standardizedFileURL
+        guard target.deletingLastPathComponent() == dir else {
+            throw SessionDBRepairError.deleteFailed("拒绝删除备份目录之外的文件: \(target.path)")
+        }
+        guard fileManager.fileExists(atPath: target.path) else {
+            throw SessionDBRepairError.backupMissing(target.path)
+        }
+        do {
+            try fileManager.removeItem(at: target)
+        } catch {
+            throw SessionDBRepairError.deleteFailed("\(target.lastPathComponent): \(error.localizedDescription)")
+        }
+        // 快照可能是 DELETE 日志格式，但历史上也产生过 WAL 伴生文件，一并清理。
+        try? fileManager.removeItem(at: URL(fileURLWithPath: target.path + "-wal"))
+        try? fileManager.removeItem(at: URL(fileURLWithPath: target.path + "-shm"))
+        return "✓ 已删除备份: \(backup.displayName)"
+    }
+
     // MARK: - 备份
 
     /// 一致性快照 + 轮转保留。备份前先确认源库健康，快照生成后再自校验。
@@ -208,7 +237,7 @@ enum SessionDBRepair {
     ///   * 快照未通过 quick_check 时**不删除**，改名保留为 `.invalid-N` 证据，
     ///     并换新文件名重试（最多 3 次），每次重试前重新确认源库健康；
     ///   * 全部失败后把 quick_check 诊断与保留的证据路径一并抛出。
-    nonisolated static func backupNow(databaseURL: URL, backupDir: URL, keep: Int = 20) throws -> SessionDBBackup {
+    nonisolated static func backupNow(databaseURL: URL, backupDir: URL, keep: Int = maxBackups) throws -> SessionDBBackup {
         let fileManager = FileManager.default
         guard fileManager.fileExists(atPath: databaseURL.path) else {
             throw SessionDBRepairError.databaseMissing(databaseURL.path)
@@ -598,8 +627,20 @@ enum SessionDBRepair {
                 return (url, date)
             }
             .sorted { $0.1 > $1.1 }
-        guard dated.count > keep else { return }
         for stale in dated.dropFirst(keep) {
+            try? fileManager.removeItem(at: stale.0)
+        }
+
+        // 备份失败时保留的 `.invalid-N` 证据同样受轮转约束，避免目录无限增长。
+        let evidence = files
+            .filter { $0.lastPathComponent.hasPrefix("sessions-") && $0.lastPathComponent.contains(".db.invalid-") }
+            .compactMap { url -> (URL, Date)? in
+                guard let values = try? url.resourceValues(forKeys: [.contentModificationDateKey]),
+                      let date = values.contentModificationDate else { return nil }
+                return (url, date)
+            }
+            .sorted { $0.1 > $1.1 }
+        for stale in evidence.dropFirst(keep) {
             try? fileManager.removeItem(at: stale.0)
         }
     }
@@ -744,6 +785,20 @@ final class SessionDBRepairModel: ObservableObject {
             await mothx.loadWorkspace()
         }
         busy = false
+        refresh()
+    }
+
+    /// 删除单个备份（纯文件操作，无需停止 mothx 服务）。
+    func deleteBackup(_ backup: SessionDBBackup) async {
+        let backupDir = backupDirectory
+        do {
+            let output = try await Task.detached(priority: .userInitiated) {
+                try SessionDBRepair.deleteBackup(backup, backupDir: backupDir)
+            }.value
+            append(output)
+        } catch {
+            append("✗ \(error.localizedDescription)")
+        }
         refresh()
     }
 

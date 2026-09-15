@@ -27,8 +27,12 @@ struct ContentView: View {
     @State private var showUpdatePrompt = false
     @State private var pendingUpdateVersion: String?
     @State private var pendingRuntimeStatus: MothxRuntimeVersionStatus = .needsUpgrade
+    /// Whether the pending prompt is a compatibility up/downgrade or a plain
+    /// "newer published build" notice; it selects the dialog copy/action.
+    @State private var pendingIsOnlineUpdate = false
     @State private var showUpdateProgress = false
     @State private var updateStage: MothxUpdateStage = .stoppingService
+    @State private var updateTargetVersion = MothxRuntimeCompatibility.recommendedVersion
     @State private var updateLog = ""
     @State private var skipUpdatePromptThisLaunch = false
     /// 数据检查与修复模式（启动检测或设置页触发）。
@@ -74,11 +78,21 @@ struct ContentView: View {
     }
 
     private var pendingRuntimePromptTitle: String {
-        languageStoreCopy.runtimePromptTitle(pendingUpdateVersion ?? "", pendingIsDowngrade)
+        pendingIsOnlineUpdate
+            ? languageStoreCopy.updatePromptTitle(pendingUpdateVersion ?? "")
+            : languageStoreCopy.runtimePromptTitle(pendingUpdateVersion ?? "", pendingIsDowngrade)
     }
 
     private var pendingRuntimePromptMessage: String {
-        languageStoreCopy.runtimePromptMessage(pendingUpdateVersion ?? "", pendingIsDowngrade)
+        pendingIsOnlineUpdate
+            ? languageStoreCopy.updatePromptMessage
+            : languageStoreCopy.runtimePromptMessage(pendingUpdateVersion ?? "", pendingIsDowngrade)
+    }
+
+    private var pendingRuntimePromptAction: String {
+        pendingIsOnlineUpdate
+            ? languageStoreCopy.updatePromptNow
+            : languageStoreCopy.runtimePromptAction(pendingIsDowngrade)
     }
 
     var body: some View {
@@ -136,10 +150,11 @@ struct ContentView: View {
             }.padding(24).frame(width: 520)
         }
         .confirmationDialog(pendingRuntimePromptTitle, isPresented: $showUpdatePrompt, titleVisibility: .visible) {
-            Button(languageStoreCopy.runtimePromptAction(pendingIsDowngrade)) {
+            Button(pendingRuntimePromptAction) {
+                let target = pendingUpdateVersion ?? MothxRuntimeCompatibility.recommendedVersion
                 pendingUpdateVersion = nil
                 skipUpdatePromptThisLaunch = true
-                Task { await runUpdate(asAdmin: false) }
+                Task { await runUpdate(targetVersion: target, asAdmin: false) }
             }
             Button(languageStoreCopy.updatePromptIgnore) {
                 if let version = pendingUpdateVersion { ignoredUpdateVersion = version }
@@ -157,9 +172,9 @@ struct ContentView: View {
             UpdateProgressSheet(
                 stage: updateStage,
                 log: updateLog,
-                targetVersion: MothxRuntimeCompatibility.recommendedVersion,
+                targetVersion: updateTargetVersion,
                 onClose: { showUpdateProgress = false },
-                onInstallAsAdmin: { Task { await runUpdate(asAdmin: true) } }
+                onInstallAsAdmin: { Task { await runUpdate(targetVersion: updateTargetVersion, asAdmin: true) } }
             )
         }
         .onChange(of: showEnvironmentCheck) { _, shown in
@@ -198,11 +213,13 @@ struct ContentView: View {
     }
 
     /// After the environment check sheet closes, prompt once when the
-    /// installed runtime is outside the recommended compatibility version.
+    /// installed runtime is outside the recommended compatibility version, or
+    /// when npm publishes a build newer than the installed runtime.
     private func checkMothxUpdateAtLaunch() async {
         guard !skipUpdatePromptThisLaunch else { return }
         #if DEBUG
         if ProcessInfo.processInfo.environment["MOTHXOS_SIMULATE_UPDATE_PROMPT"] == "1" {
+            pendingIsOnlineUpdate = false
             pendingRuntimeStatus = .needsUpgrade
             pendingUpdateVersion = MothxRuntimeCompatibility.recommendedVersion
             showUpdatePrompt = true
@@ -212,24 +229,37 @@ struct ContentView: View {
         let recommended = MothxRuntimeCompatibility.recommendedVersion
         guard let current = await RuntimeInstall.mothxVersionString() else { return }
         let status = RuntimeInstall.runtimeVersionStatus(current: current, recommended: recommended)
-        guard status == .needsUpgrade || status == .updateAvailable || status == .newerCanDowngrade else { return }
-        guard recommended != ignoredUpdateVersion else { return }
+        if status == .needsUpgrade || status == .updateAvailable || status == .newerCanDowngrade {
+            guard recommended != ignoredUpdateVersion else { return }
+            pendingIsOnlineUpdate = false
+            pendingRuntimeStatus = status
+            pendingUpdateVersion = recommended
+            showUpdatePrompt = true
+            return
+        }
+        // Inside the supported 1.3.x line: still notify about a strictly newer
+        // published build (e.g. installed 1.3.100 vs npm 1.3.101), otherwise a
+        // compatible-but-stale runtime would never be offered the update.
+        guard let target = RuntimeInstall.onlineUpdateTarget(current: current, latest: await RuntimeInstall.latestNpmVersion()),
+              target != ignoredUpdateVersion else { return }
+        pendingIsOnlineUpdate = true
         pendingRuntimeStatus = status
-        pendingUpdateVersion = recommended
+        pendingUpdateVersion = target
         showUpdatePrompt = true
     }
 
     /// Runs the shared update flow in the progress sheet (stop service → npm
     /// install → restart). `asAdmin` retries through the system authorization
     /// prompt.
-    private func runUpdate(asAdmin: Bool) async {
+    private func runUpdate(targetVersion: String, asAdmin: Bool) async {
         let c = languageStoreCopy
         updateLog = ""
         updateStage = .stoppingService
+        updateTargetVersion = targetVersion
         showUpdateProgress = true
-        let result = await mothx.performMothxUpdate(targetVersion: MothxRuntimeCompatibility.recommendedVersion, asAdmin: asAdmin, onStage: { stage in
+        let result = await mothx.performMothxUpdate(targetVersion: targetVersion, asAdmin: asAdmin, onStage: { stage in
             updateStage = stage
-            let line = UpdateFlowSupport.stageLogLine(stage, c: c, targetVersion: MothxRuntimeCompatibility.recommendedVersion)
+            let line = UpdateFlowSupport.stageLogLine(stage, c: c, targetVersion: targetVersion)
             if !line.isEmpty { updateLog += (updateLog.isEmpty ? "" : "\n") + line }
         }, onLog: { chunk in
             updateLog += chunk

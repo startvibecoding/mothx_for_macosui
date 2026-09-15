@@ -158,6 +158,8 @@ xcodebuild -project mothxOS.xcodeproj \
   CODE_SIGNING_ALLOWED=NO build
 
 hdiutil create -volname "mothxOS" \
-  -srcfolder ./build/Build/Products/Release/mothxOS.app \
-  -ov -format UDZO mothxOS.dmg
+  -srcfolder ../mothxOS_dist \
+  -ov -format UDZO ../mothxOS.dmg
+  
+
 ```

@@ -37,9 +37,34 @@ struct AboutSection: View {
         runtimeStatus == .needsUpgrade
             || runtimeStatus == .updateAvailable
             || runtimeStatus == .newerCanDowngrade
+            || onlineUpdateVersion != nil
+    }
+
+    /// Non-nil when npm publishes a build strictly newer than the installed
+    /// runtime, so the About page can offer an in-place online update to it.
+    ///
+    /// Compatibility-driven up/downgrades (outside the supported 1.3.x line)
+    /// keep their own button and target the recommended patch; the online
+    /// update only fills the gap where the installed runtime is already
+    /// compatible but still behind the published release (e.g. 1.3.100 vs
+    /// 1.3.101).
+    private var onlineUpdateVersion: String? {
+        switch runtimeStatus {
+        case .needsUpgrade, .newerCanDowngrade:
+            return nil
+        default:
+            return RuntimeInstall.onlineUpdateTarget(current: mothxVersion, latest: latestVersion)
+        }
+    }
+
+    /// Version the update button installs: the newer published build when one
+    /// is available, otherwise the app's recommended compatibility patch.
+    private var updateTargetVersion: String {
+        onlineUpdateVersion ?? recommendedRuntimeVersion
     }
 
     private var actionButtonTitle: String {
+        if onlineUpdateVersion != nil { return languageStore.copy.updateButton }
         switch runtimeStatus {
         case .newerCanDowngrade: return languageStore.copy.downgradeToRecommended
         default: return languageStore.copy.upgradeToRecommended
@@ -65,22 +90,27 @@ struct AboutSection: View {
                 }
 
                 if !isChecking {
-                    switch runtimeStatus {
-                    case .needsUpgrade:
-                        Text(c.runtimeNeedsUpgradeHint(recommendedRuntimeVersion))
+                    if onlineUpdateVersion != nil {
+                        Text(c.updateAvailableHint)
                             .font(.caption).foregroundStyle(.orange)
-                    case .updateAvailable:
-                        Text(c.runtimeUpdateAvailableHint(recommendedRuntimeVersion))
-                            .font(.caption).foregroundStyle(.orange)
-                    case .newerCanDowngrade:
-                        Text(c.runtimeNewerCanDowngradeHint(recommendedRuntimeVersion))
-                            .font(.caption).foregroundStyle(.orange)
-                    case .compatible:
-                        Text(c.runtimeCompatibleHint).font(.caption).foregroundStyle(.secondary)
-                    case .missing:
-                        Text(c.runtimeMissingHint).font(.caption).foregroundStyle(.secondary)
-                    case .invalid:
-                        Text(c.runtimeVersionInvalidHint).font(.caption).foregroundStyle(.red)
+                    } else {
+                        switch runtimeStatus {
+                        case .needsUpgrade:
+                            Text(c.runtimeNeedsUpgradeHint(recommendedRuntimeVersion))
+                                .font(.caption).foregroundStyle(.orange)
+                        case .updateAvailable:
+                            Text(c.runtimeUpdateAvailableHint(recommendedRuntimeVersion))
+                                .font(.caption).foregroundStyle(.orange)
+                        case .newerCanDowngrade:
+                            Text(c.runtimeNewerCanDowngradeHint(recommendedRuntimeVersion))
+                                .font(.caption).foregroundStyle(.orange)
+                        case .compatible:
+                            Text(c.runtimeCompatibleHint).font(.caption).foregroundStyle(.secondary)
+                        case .missing:
+                            Text(c.runtimeMissingHint).font(.caption).foregroundStyle(.secondary)
+                        case .invalid:
+                            Text(c.runtimeVersionInvalidHint).font(.caption).foregroundStyle(.red)
+                        }
                     }
                     if latestVersion == nil {
                         Text(c.npmUnavailableHint).font(.caption).foregroundStyle(.secondary)
@@ -108,7 +138,7 @@ struct AboutSection: View {
             UpdateProgressSheet(
                 stage: updateStage,
                 log: updateLog,
-                targetVersion: MothxRuntimeCompatibility.recommendedVersion,
+                targetVersion: updateTargetVersion,
                 onClose: { showUpdateProgress = false },
                 onInstallAsAdmin: { Task { await runUpdate(asAdmin: true) } }
             )
@@ -151,9 +181,10 @@ struct AboutSection: View {
         updateStage = .stoppingService
         showUpdateProgress = true
 
-        let result = await mothx.performMothxUpdate(targetVersion: recommendedRuntimeVersion, asAdmin: asAdmin, onStage: { stage in
+        let target = updateTargetVersion
+        let result = await mothx.performMothxUpdate(targetVersion: target, asAdmin: asAdmin, onStage: { stage in
             updateStage = stage
-            let line = UpdateFlowSupport.stageLogLine(stage, c: c, targetVersion: MothxRuntimeCompatibility.recommendedVersion)
+            let line = UpdateFlowSupport.stageLogLine(stage, c: c, targetVersion: target)
             if !line.isEmpty { appendUpdateLog(line) }
             if stage == .stoppingService && !mothx.ownsRunningProcess {
                 appendUpdateLog(c.updateLogExternalServiceSkipped)

@@ -4022,6 +4022,63 @@ final class MothxServiceManager: ObservableObject {
         return try? String(contentsOf: fileURL, encoding: .utf8)
     }
 
+    /// Lists the supporting Markdown/text documents bundled with a skill,
+    /// excluding the canonical `SKILL.md`. Nested files (e.g.
+    /// `references/audio.md`) are included and sorted with top-level files
+    /// first, then by relative path.
+    func skillDocuments(_ skill: MothxSkill) -> [MothxSkillDocument] {
+        guard !skill.directory.isEmpty else { return [] }
+        let baseURL = URL(fileURLWithPath: skill.directory)
+        let fileManager = FileManager.default
+        guard let enumerator = fileManager.enumerator(
+            at: baseURL,
+            includingPropertiesForKeys: [.isDirectoryKey, .isRegularFileKey],
+            options: [.skipsHiddenFiles, .skipsPackageDescendants]
+        ) else { return [] }
+
+        let basePath = baseURL.standardizedFileURL.path
+        var documents: [MothxSkillDocument] = []
+        for case let fileURL as URL in enumerator {
+            let values = try? fileURL.resourceValues(forKeys: [.isDirectoryKey, .isRegularFileKey])
+            guard values?.isRegularFile == true else { continue }
+            let ext = fileURL.pathExtension.lowercased()
+            guard Self.skillDocumentExtensions.contains(ext) else { continue }
+            let filePath = fileURL.standardizedFileURL.path
+            guard filePath.hasPrefix(basePath + "/") else { continue }
+            let relative = String(filePath.dropFirst(basePath.count + 1))
+            guard relative.caseInsensitiveCompare("SKILL.md") != .orderedSame else { continue }
+            documents.append(MothxSkillDocument(
+                id: relative,
+                name: fileURL.lastPathComponent,
+                relativePath: relative,
+                fileExtension: ext
+            ))
+        }
+        return documents.sorted { lhs, rhs in
+            let lhsNested = lhs.relativePath.contains("/")
+            let rhsNested = rhs.relativePath.contains("/")
+            if lhsNested != rhsNested { return !lhsNested }
+            return lhs.relativePath.localizedCaseInsensitiveCompare(rhs.relativePath) == .orderedAscending
+        }
+    }
+
+    /// Absolute, sandbox-checked file URL for a supporting skill document.
+    /// Returns nil when the skill has no directory or the resolved path escapes
+    /// the skill folder.
+    func skillDocumentURL(_ skill: MothxSkill, document: MothxSkillDocument) -> URL? {
+        guard !skill.directory.isEmpty else { return nil }
+        let baseURL = URL(fileURLWithPath: skill.directory).standardizedFileURL
+        let fileURL = baseURL.appendingPathComponent(document.relativePath).standardizedFileURL
+        guard fileURL.path.hasPrefix(baseURL.path + "/") else { return nil }
+        return fileURL
+    }
+
+    /// Reads a supporting document's UTF-8 contents for read-only preview.
+    func skillDocumentContent(_ skill: MothxSkill, document: MothxSkillDocument) -> String? {
+        guard let fileURL = skillDocumentURL(skill, document: document) else { return nil }
+        return try? String(contentsOf: fileURL, encoding: .utf8)
+    }
+
     /// Saves a global skill's SKILL.md and refreshes the skill indexes.
     /// Returns nil on success or a user-facing error message on failure.
     @discardableResult
@@ -4333,6 +4390,9 @@ final class MothxServiceManager: ObservableObject {
     static var customSkillRoot: String {
         (NSHomeDirectory() as NSString).appendingPathComponent(".mothx/skills")
     }
+
+    /// File extensions surfaced as viewable supporting documents in Settings.
+    static let skillDocumentExtensions: Set<String> = ["md", "markdown", "mdx", "txt"]
 
     static var globalSkillRoots: [String] {
         [

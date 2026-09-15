@@ -399,7 +399,7 @@ struct SkillsSection: View {
                 }
             }
 
-            SettingsCard(title: c.text("技能列表", "Skill list"), subtitle: c.text("系统技能来自 ~/.agents/skills，自定义技能来自 ~/.mothx/skills。点击技能可查看和编辑 SKILL.md。", "System skills are loaded from ~/.agents/skills; custom skills are loaded from ~/.mothx/skills. Select a skill to inspect and edit its SKILL.md.")) {
+            SettingsCard(title: c.text("技能列表", "Skill list"), subtitle: c.text("系统技能来自 ~/.agents/skills，自定义技能来自 ~/.mothx/skills。点击技能可查看和编辑 SKILL.md，附带文档列在末尾，可点击做 Markdown 预览或在 Finder 中显示。", "System skills are loaded from ~/.agents/skills; custom skills are loaded from ~/.mothx/skills. Select a skill to inspect and edit its SKILL.md; bundled documents are listed at the bottom and can be previewed as Markdown or revealed in Finder.")) {
                 Picker("", selection: $selectedTab) {
                     Text(c.text("系统技能", "System skills")).tag(GlobalSkillTab.system)
                     Text(c.text("自定义技能", "Custom skills")).tag(GlobalSkillTab.custom)
@@ -494,6 +494,8 @@ private struct GlobalSkillDetail: View {
     let canUninstall: Bool
     let uninstall: (MothxSkill) -> Void
     @State private var showUninstallConfirmation = false
+    @State private var documents: [MothxSkillDocument] = []
+    @State private var previewDocument: MothxSkillDocument?
 
     var body: some View {
         let c = languageStore.copy
@@ -551,6 +553,48 @@ private struct GlobalSkillDetail: View {
                     .tint(.orange)
                     .disabled(isSaving || content.isEmpty)
                 }
+                if !documents.isEmpty {
+                    VStack(alignment: .leading, spacing: 7) {
+                        Text(c.text("附带文档", "Bundled documents"))
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                        VStack(alignment: .leading, spacing: 0) {
+                            ForEach(Array(documents.enumerated()), id: \.element.id) { index, document in
+                                if index > 0 { Divider() }
+                                Button {
+                                    previewDocument = document
+                                } label: {
+                                    HStack(spacing: 8) {
+                                        Image(systemName: "doc.text")
+                                            .foregroundStyle(.orange)
+                                        VStack(alignment: .leading, spacing: 1) {
+                                            Text(document.name)
+                                                .font(.callout)
+                                                .foregroundStyle(.primary)
+                                            if document.relativePath != document.name {
+                                                Text(document.relativePath)
+                                                    .font(.caption2)
+                                                    .foregroundStyle(.secondary)
+                                            }
+                                        }
+                                        Spacer(minLength: 6)
+                                        Image(systemName: "chevron.right")
+                                            .font(.caption2)
+                                            .foregroundStyle(.tertiary)
+                                    }
+                                    .padding(.vertical, 6)
+                                    .contentShape(Rectangle())
+                                }
+                                .buttonStyle(.plain)
+                                .help(c.text("点击查看此文档", "Click to view this document"))
+                            }
+                        }
+                        .padding(.horizontal, 10)
+                        .background(Color.primary.opacity(0.05))
+                        .clipShape(RoundedRectangle(cornerRadius: 7))
+                        .overlay(RoundedRectangle(cornerRadius: 7).stroke(Color.primary.opacity(0.1)))
+                    }
+                }
             }
         }
         .padding(14)
@@ -558,7 +602,13 @@ private struct GlobalSkillDetail: View {
         .clipShape(RoundedRectangle(cornerRadius: 9))
         .overlay(RoundedRectangle(cornerRadius: 9).stroke(Color.primary.opacity(0.1)))
         .task(id: skill.id) {
+            documents = mothx.skillDocuments(skill)
             loadContent(skill)
+        }
+        .sheet(item: $previewDocument) { document in
+            SkillDocumentSheet(skill: skill, document: document)
+                .environmentObject(mothx)
+                .environmentObject(languageStore)
         }
         .confirmationDialog(
             c.text("卸载技能？", "Uninstall skill?"),
@@ -575,6 +625,91 @@ private struct GlobalSkillDetail: View {
                 "The skill directory and its files will be deleted. This action cannot be undone."
             ))
         }
+    }
+}
+
+/// Read-only preview of a supporting document shipped with a skill.
+private struct SkillDocumentSheet: View {
+    @EnvironmentObject private var mothx: MothxServiceManager
+    @EnvironmentObject private var languageStore: LanguageStore
+    @Environment(\.dismiss) private var dismiss
+    let skill: MothxSkill
+    let document: MothxSkillDocument
+
+    @State private var text: String?
+
+    var body: some View {
+        let c = languageStore.copy
+        VStack(alignment: .leading, spacing: 0) {
+            HStack(spacing: 10) {
+                Image(systemName: "doc.text")
+                    .foregroundStyle(.orange)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(document.name)
+                        .font(.headline)
+                    Text("\(skill.name) / \(document.relativePath)")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                }
+                Spacer()
+                Button {
+                    revealInFinder()
+                } label: {
+                    Label(c.text("在 Finder 中显示", "Reveal in Finder"), systemImage: "folder")
+                }
+                .help(c.text("在 Finder 中显示此文件", "Reveal this file in Finder"))
+                .disabled(mothx.skillDocumentURL(skill, document: document) == nil)
+                Button(c.text("关闭", "Close")) { dismiss() }
+                    .keyboardShortcut(.cancelAction)
+            }
+            .padding(14)
+
+            Divider()
+
+            if let text {
+                if isMarkdown {
+                    ScrollView(.vertical) {
+                        MarkdownDocumentView(markdown: text)
+                            .padding(16)
+                    }
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                } else {
+                    ScrollView([.vertical, .horizontal]) {
+                        Text(text)
+                            .font(.system(size: 12, design: .monospaced))
+                            .textSelection(.enabled)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(16)
+                    }
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                }
+            } else {
+                VStack(spacing: 10) {
+                    Image(systemName: "exclamationmark.triangle")
+                        .foregroundStyle(.secondary)
+                    Text(c.text("无法读取此文档。", "Unable to read this document."))
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            }
+        }
+        .frame(minWidth: 560, idealWidth: 720, minHeight: 420, idealHeight: 560)
+        .task(id: document.id) {
+            text = mothx.skillDocumentContent(skill, document: document)
+        }
+    }
+
+    /// Documents whose extension we render through the Markdown pipeline.
+    private var isMarkdown: Bool {
+        ["md", "markdown", "mdx"].contains(document.fileExtension.lowercased())
+    }
+
+    private func revealInFinder() {
+        guard let url = mothx.skillDocumentURL(skill, document: document) else { return }
+        NSWorkspace.shared.activateFileViewerSelecting([url])
     }
 }
 
@@ -1585,6 +1720,7 @@ private struct DataMaintenanceSection: View {
     @AppStorage("mothxOS.autoBackupOnLaunch") private var autoBackupOnLaunch = true
 
     @State private var confirmRestore: SessionDBBackup?
+    @State private var confirmDelete: SessionDBBackup?
     @State private var confirmRepair = false
     @State private var confirmDeepRecover = false
 
@@ -1675,6 +1811,20 @@ private struct DataMaintenanceSection: View {
             Button(c.cancel, role: .cancel) { confirmRestore = nil }
         } message: {
             Text(confirmRestore.map { c.dataRestoreDialogMessage($0.displayName) } ?? "")
+        }
+        .confirmationDialog(
+            c.dataDeleteBackupDialogTitle,
+            isPresented: Binding(get: { confirmDelete != nil }, set: { if !$0 { confirmDelete = nil } }),
+            titleVisibility: .visible
+        ) {
+            Button(c.dataDeleteBackupAction, role: .destructive) {
+                guard let backup = confirmDelete else { return }
+                confirmDelete = nil
+                Task { await model.deleteBackup(backup) }
+            }
+            Button(c.cancel, role: .cancel) { confirmDelete = nil }
+        } message: {
+            Text(confirmDelete.map { c.dataDeleteBackupDialogMessage($0.displayName) } ?? "")
         }
         .confirmationDialog(c.dataRepairNow, isPresented: $confirmRepair, titleVisibility: .visible) {
             Button(c.dataRepairNow) {
@@ -1781,10 +1931,12 @@ private struct DataMaintenanceSection: View {
                         }
                         Spacer()
                         if backup.valid {
-                            Button(c.dataRestore) { confirmRestore = backup }
-                                .buttonStyle(.borderless)
-                                .font(.caption)
-                                .disabled(model.busy)
+                            BackupPillButton(title: c.dataRestore, systemImage: "arrow.uturn.backward", tint: .orange, isDisabled: model.busy) {
+                                confirmRestore = backup
+                            }
+                        }
+                        BackupPillButton(title: c.dataDeleteBackup, systemImage: "trash", tint: .red, isDisabled: model.busy) {
+                            confirmDelete = backup
                         }
                     }
                     .padding(.vertical, 2)

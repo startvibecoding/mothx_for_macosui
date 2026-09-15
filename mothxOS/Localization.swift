@@ -557,6 +557,10 @@ struct Copy {
     var dataRestoreDialogTitle: String { text("确认从备份恢复？", "Restore from this backup?") }
     var dataRestoreDialogMessage: (String) -> String { { name in self.text("将停止 mothx 服务，用 \"\(name)\" 替换当前会话库；当前文件会先归档保存。请确认这是你想恢复的数据。", "The mothx service will be stopped and \"\(name)\" will replace the current session database. The current files are archived first. Make sure this is the data you want.") } }
     var dataRestoreAction: String { text("恢复", "Restore") }
+    var dataDeleteBackup: String { text("删除", "Delete") }
+    var dataDeleteBackupDialogTitle: String { text("确认删除该备份？", "Delete this backup?") }
+    var dataDeleteBackupDialogMessage: (String) -> String { { name in self.text("将永久删除备份 \"\(name)\"，该恢复点将不再可用，此操作无法撤销。", "The backup \"\(name)\" will be permanently deleted. This restore point will no longer be available, and the action cannot be undone.") } }
+    var dataDeleteBackupAction: String { text("删除", "Delete") }
     var dataRepairNow: String { text("修复 WAL / SHM", "Repair WAL / SHM") }
     var dataRepairDialogMessage: String { text("将清理异常的共享内存索引并合并待写入日志。确认没有其他程序（如 TUI）正在使用会话库。", "Irregular shared-memory indexes will be cleaned and pending WAL frames merged. Make sure no other program (e.g. the TUI) is using the session database.") }
     var dataDeepRecover: String { text("深度恢复 (.recover)", "Deep recover (.recover)") }
